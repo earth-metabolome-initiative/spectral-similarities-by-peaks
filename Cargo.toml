@@ -1,0 +1,45 @@
+[package]
+name = "spectral-similarities-by-peaks"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "Experiments on how MS2 spectral similarity distributions change with retained peaks."
+readme = "README.md"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.5", features = ["derive"] }
+csv = "1"
+indicatif = "0.18"
+mascot-rs = { git = "https://github.com/LucaCappelletti94/mascot-rs", default-features = false, features = ["std"] }
+mass_spectrometry = { git = "https://github.com/earth-metabolome-initiative/mass-spectrometry-traits", features = ["rayon", "std"] }
+pollster = "0.4"
+rand = "0.9"
+rand_chacha = "0.9"
+rayon = "1.11"
+serde = { version = "1", features = ["derive"] }
+
+[lints.rust]
+missing_docs = "deny"
+unsafe_code = "deny"
+warnings = "deny"
+
+[lints.rustdoc]
+bare_urls = "deny"
+broken_intra_doc_links = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+dbg_macro = "deny"
+expect_used = "deny"
+missing_docs_in_private_items = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+multiple_crate_versions = "allow"
+cargo_common_metadata = "allow"
