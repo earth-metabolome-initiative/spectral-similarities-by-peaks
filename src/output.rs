@@ -405,26 +405,6 @@ fn neighbor_batch(rows: &[NeighborHit]) -> Result<RecordBatch> {
                 .map(|row| row.target_npc_pathway.as_deref())
                 .collect::<Vec<_>>(),
         ),
-        optional_strings(
-            rows.iter()
-                .map(|row| row.query_npc_superclass.as_deref())
-                .collect::<Vec<_>>(),
-        ),
-        optional_strings(
-            rows.iter()
-                .map(|row| row.target_npc_superclass.as_deref())
-                .collect::<Vec<_>>(),
-        ),
-        optional_strings(
-            rows.iter()
-                .map(|row| row.query_npc_class.as_deref())
-                .collect::<Vec<_>>(),
-        ),
-        optional_strings(
-            rows.iter()
-                .map(|row| row.target_npc_class.as_deref())
-                .collect::<Vec<_>>(),
-        ),
     ];
     record_batch(neighbor_schema(), columns, "neighbor hits")
 }
@@ -661,10 +641,6 @@ fn neighbor_schema() -> SchemaRef {
         utf8("target_name", true),
         utf8("query_npc_pathway", true),
         utf8("target_npc_pathway", true),
-        utf8("query_npc_superclass", true),
-        utf8("target_npc_superclass", true),
-        utf8("query_npc_class", true),
-        utf8("target_npc_class", true),
     ])
 }
 

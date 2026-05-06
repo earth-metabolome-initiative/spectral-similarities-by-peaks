@@ -71,20 +71,12 @@ fn record_from_mgf(index: usize, record: &MascotGenericFormat<f64>) -> LoadedRec
     let npc_pathway = metadata
         .arbitrary_metadata_value("NPC_PATHWAY")
         .map(ToOwned::to_owned);
-    let npc_superclass = metadata
-        .arbitrary_metadata_value("NPC_SUPERCLASS")
-        .map(ToOwned::to_owned);
-    let npc_class = metadata
-        .arbitrary_metadata_value("NPC_CLASS")
-        .map(ToOwned::to_owned);
     let spectrum = record.as_ref().clone();
 
     LoadedRecord {
         id,
         name,
         npc_pathway,
-        npc_superclass,
-        npc_class,
         spectrum,
     }
 }
@@ -112,8 +104,6 @@ fn synthetic_smoke_records() -> Result<Vec<LoadedRecord>> {
                 id: format!("synthetic-{index:02}"),
                 name: Some(format!("synthetic spectrum {index:02}")),
                 npc_pathway: Some(format!("pathway-{cluster}")),
-                npc_superclass: Some(format!("superclass-{cluster}")),
-                npc_class: Some(format!("class-{cluster}")),
                 spectrum,
             })
         })

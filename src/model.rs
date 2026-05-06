@@ -101,12 +101,8 @@ pub struct LoadedRecord {
     pub id: String,
     /// Optional human-readable spectrum name.
     pub name: Option<String>,
-    /// Optional `NPC` pathway label.
+    /// Optional raw `NPC` pathway label field.
     pub npc_pathway: Option<String>,
-    /// Optional `NPC` superclass label.
-    pub npc_superclass: Option<String>,
-    /// Optional `NPC` class label.
-    pub npc_class: Option<String>,
     /// Spectrum used for peak selection and similarity indexing.
     pub spectrum: GenericSpectrum,
 }
@@ -150,18 +146,10 @@ pub struct NeighborHit {
     pub query_name: Option<String>,
     /// Target spectrum name, if available.
     pub target_name: Option<String>,
-    /// Query `NPC` pathway label, if available.
+    /// Query raw `NPC` pathway label field, if available.
     pub query_npc_pathway: Option<String>,
-    /// Target `NPC` pathway label, if available.
+    /// Target raw `NPC` pathway label field, if available.
     pub target_npc_pathway: Option<String>,
-    /// Query `NPC` superclass label, if available.
-    pub query_npc_superclass: Option<String>,
-    /// Target `NPC` superclass label, if available.
-    pub target_npc_superclass: Option<String>,
-    /// Query `NPC` class label, if available.
-    pub query_npc_class: Option<String>,
-    /// Target `NPC` class label, if available.
-    pub target_npc_class: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -272,7 +260,7 @@ pub struct PathwayScore {
     pub query_index: usize,
     /// Query record identifier.
     pub query_id: String,
-    /// Query `NPC` pathway label, if available.
+    /// Query raw `NPC` pathway label field, if available.
     pub query_npc_pathway: Option<String>,
     /// Candidate pathway represented by the reference spectra.
     pub candidate_npc_pathway: String,
@@ -295,13 +283,13 @@ pub struct PathwayPrediction {
     pub query_index: usize,
     /// Query record identifier.
     pub query_id: String,
-    /// Query `NPC` pathway label, if available.
+    /// Query raw `NPC` pathway label field, if available.
     pub query_npc_pathway: Option<String>,
     /// Predicted pathway label, if any candidate pathway was scored.
     pub predicted_npc_pathway: Option<String>,
     /// Best candidate score.
     pub predicted_score: f64,
-    /// Whether the prediction matches the query pathway when both are known.
+    /// Whether the prediction matches any query pathway label when both are known.
     pub is_correct: Option<bool>,
     /// Number of candidate pathways scored.
     pub candidate_pathways: usize,

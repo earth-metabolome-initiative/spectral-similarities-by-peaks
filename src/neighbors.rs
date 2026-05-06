@@ -467,10 +467,6 @@ fn neighbor_hit(
         target_name: target.name.clone(),
         query_npc_pathway: query.npc_pathway.clone(),
         target_npc_pathway: target.npc_pathway.clone(),
-        query_npc_superclass: query.npc_superclass.clone(),
-        target_npc_superclass: target.npc_superclass.clone(),
-        query_npc_class: query.npc_class.clone(),
-        target_npc_class: target.npc_class.clone(),
     })
 }
 
@@ -551,8 +547,6 @@ mod tests {
             id: id.to_string(),
             name: None,
             npc_pathway: Some("Synthetic".to_string()),
-            npc_superclass: None,
-            npc_class: None,
             spectrum,
         })
     }
