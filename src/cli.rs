@@ -40,7 +40,7 @@ pub struct ScanArgs {
     /// Directory where mascot-rs caches downloaded datasets.
     #[arg(long, default_value = "data")]
     pub data_dir: PathBuf,
-    /// Output directory for CSV artifacts.
+    /// Output directory for binary artifacts.
     #[arg(long, default_value = "results")]
     pub output_dir: PathBuf,
     /// Similarity config as `metric:mz_power:intensity_power[:weighted]`.

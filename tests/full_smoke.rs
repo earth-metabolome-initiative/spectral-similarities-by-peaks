@@ -8,10 +8,13 @@ use std::{
 };
 
 use clap::{Parser, error::ErrorKind};
+use ndarray::{Array1, Array3};
+use ndarray_npy::NpzReader;
+use parquet::file::reader::{FileReader, SerializedFileReader};
 use spectral_similarities_by_peaks::{cli::Cli, run};
 
 #[test]
-/// The synthetic scan writes all expected CSV artifacts.
+/// The synthetic scan writes all expected binary artifacts.
 fn full_scan_smoke_test_produces_expected_artifacts() -> Result<(), Box<dyn Error>> {
     let root = smoke_root()?;
     let data_dir = root.join("data");
@@ -54,13 +57,15 @@ fn full_scan_smoke_test_produces_expected_artifacts() -> Result<(), Box<dyn Erro
     ])?;
     run::run(cli)?;
 
-    assert_csv_rows(&output_dir.join("similarities.csv"), 13_824)?;
-    assert_csv_rows(&output_dir.join("distribution_summary.csv"), 384)?;
-    assert_csv_rows(&output_dir.join("distribution_histograms.csv"), 1_920)?;
-    assert_csv_rows(&output_dir.join("distribution_tests.csv"), 381)?;
-    assert_csv_rows(&output_dir.join("distribution_grid.csv"), 49_152)?;
-    assert_csv_rows(&output_dir.join("pathway_scores.csv"), 12_288)?;
-    assert_csv_rows(&output_dir.join("pathway_predictions.csv"), 3_072)?;
+    assert_parquet_rows(&output_dir.join("similarities.parquet"), 13_824)?;
+    assert_parquet_rows(&output_dir.join("distribution_summary.parquet"), 384)?;
+    assert_parquet_rows(&output_dir.join("distribution_histograms.parquet"), 1_920)?;
+    assert_parquet_rows(&output_dir.join("distribution_tests.parquet"), 381)?;
+    assert_parquet_rows(&output_dir.join("distribution_grid.parquet"), 49_152)?;
+    assert_parquet_rows(&output_dir.join("distribution_grid_configs.parquet"), 3)?;
+    assert_parquet_rows(&output_dir.join("pathway_scores.parquet"), 12_288)?;
+    assert_parquet_rows(&output_dir.join("pathway_predictions.parquet"), 3_072)?;
+    assert_grid_npz_shapes(&output_dir.join("distribution_grid.npz"))?;
 
     fs::remove_dir_all(root)?;
     Ok(())
@@ -116,18 +121,37 @@ fn smoke_root() -> Result<PathBuf, Box<dyn Error>> {
     )))
 }
 
-/// Assert that a CSV file exists, is non-empty, and has the expected row count.
-fn assert_csv_rows(path: &Path, expected_rows: usize) -> Result<(), Box<dyn Error>> {
+/// Assert that a Parquet file exists, is non-empty, and has the expected row count.
+fn assert_parquet_rows(path: &Path, expected_rows: usize) -> Result<(), Box<dyn Error>> {
     let metadata = fs::metadata(path)?;
     assert!(metadata.len() > 0, "{} is empty", path.display());
 
-    let mut reader = csv::Reader::from_path(path)?;
-    let rows = reader.records().collect::<Result<Vec<_>, _>>()?;
+    let file = fs::File::open(path)?;
+    let reader = SerializedFileReader::new(file)?;
+    let rows = usize::try_from(reader.metadata().file_metadata().num_rows())?;
     assert_eq!(
-        rows.len(),
+        rows,
         expected_rows,
         "{} has an unexpected number of rows",
         path.display()
     );
+    Ok(())
+}
+
+/// Assert that the dense full-grid `NumPy` artifact has the expected axes.
+fn assert_grid_npz_shapes(path: &Path) -> Result<(), Box<dyn Error>> {
+    let file = fs::File::open(path)?;
+    let mut reader = NpzReader::new(file)?;
+    let peak_counts: Array1<u64> = reader.by_name("peak_counts.npy")?;
+    let ks_statistic: Array3<f64> = reader.by_name("ks_statistic.npy")?;
+    let ks_pvalue: Array3<f64> = reader.by_name("ks_pvalue_asymptotic.npy")?;
+    let wasserstein: Array3<f64> = reader.by_name("wasserstein_1d.npy")?;
+    let mean_delta: Array3<f64> = reader.by_name("mean_delta.npy")?;
+
+    assert_eq!(peak_counts.len(), 128);
+    assert_eq!(ks_statistic.shape(), &[3, 128, 128]);
+    assert_eq!(ks_pvalue.shape(), &[3, 128, 128]);
+    assert_eq!(wasserstein.shape(), &[3, 128, 128]);
+    assert_eq!(mean_delta.shape(), &[3, 128, 128]);
     Ok(())
 }

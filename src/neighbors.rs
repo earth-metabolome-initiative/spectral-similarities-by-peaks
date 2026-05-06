@@ -429,7 +429,7 @@ struct HitContext<'a> {
     records: &'a [LoadedRecord],
 }
 
-/// Convert one raw index hit into a CSV output row.
+/// Convert one raw index hit into a stored output row.
 fn neighbor_hit(
     context: &HitContext<'_>,
     query_index: usize,

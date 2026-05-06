@@ -1,5 +1,5 @@
-//! Shared model types for loaded spectra, similarity configurations, and CSV
-//! output rows.
+//! Shared model types for loaded spectra, similarity configurations, and output
+//! rows.
 
 use std::fmt;
 
@@ -52,7 +52,7 @@ pub struct SimilarityConfig {
 }
 
 impl SimilarityConfig {
-    /// Return a filesystem- and CSV-friendly configuration label.
+    /// Return a filesystem- and storage-friendly configuration label.
     #[must_use]
     pub fn name(&self) -> String {
         match self.metric {
@@ -112,7 +112,7 @@ pub struct LoadedRecord {
 }
 
 #[derive(Debug, Serialize)]
-/// One retained neighbor hit written to `similarities.csv`.
+/// One retained neighbor hit written to `similarities.parquet`.
 pub struct NeighborHit {
     /// Dataset label.
     pub dataset: String,

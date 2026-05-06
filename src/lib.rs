@@ -11,6 +11,8 @@ mod distribution;
 mod model;
 /// Top-neighbor similarity search over prepared spectra.
 mod neighbors;
+/// Binary and columnar artifact writers.
+mod output;
 /// Fixed-representative `NPC` pathway scoring.
 mod pathway;
 /// Progress-bar helpers for long-running local scans.

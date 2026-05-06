@@ -9,11 +9,15 @@ readme = "README.md"
 
 [dependencies]
 anyhow = "1"
+arrow-array = "56"
+arrow-schema = "56"
 clap = { version = "4.5", features = ["derive"] }
-csv = "1"
 indicatif = "0.18"
 mascot-rs = { git = "https://github.com/LucaCappelletti94/mascot-rs", default-features = false, features = ["std"] }
 mass_spectrometry = { git = "https://github.com/earth-metabolome-initiative/mass-spectrometry-traits", features = ["rayon", "std"] }
+ndarray = "0.16"
+ndarray-npy = "0.9"
+parquet = { version = "56", features = ["arrow"] }
 pollster = "0.4"
 rand = "0.9"
 rand_chacha = "0.9"

@@ -87,4 +87,4 @@ jobs:
         run: cargo install cargo-tarpaulin --locked
 
       - name: Measure coverage
-        run: cargo tarpaulin --locked --out Stdout
+        run: cargo tarpaulin --locked --engine llvm --lib --test full_smoke --out Stdout

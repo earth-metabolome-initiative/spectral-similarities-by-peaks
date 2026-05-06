@@ -35,7 +35,7 @@ Full local smoke test:
 cargo test --test full_smoke
 ```
 
-This runs a deterministic end-to-end synthetic scan by parsing the CLI in-process and dispatching the crate directly. It checks the generated CSV artifacts plus CLI help output. The synthetic scan avoids dataset downloads while still exercising spectrum preparation, cosine and entropy scoring, fixed reference sampling, top-k neighbor collection, distribution summaries, histograms, full comparison grids, and pathway scoring.
+This runs a deterministic end-to-end synthetic scan by parsing the CLI in-process and dispatching the crate directly. It checks the generated Parquet and NumPy artifacts plus CLI help output. The synthetic scan avoids dataset downloads while still exercising spectrum preparation, cosine and entropy scoring, fixed reference sampling, top-k neighbor collection, distribution summaries, histograms, full comparison grids, and pathway scoring.
 
 Full local verification:
 
@@ -61,14 +61,16 @@ cargo run --release -- scan \
 
 Outputs:
 
-- `similarities.csv`: one row per query, retained peak count, similarity config, and retained neighbor. Use `rank == 1` for best-neighbor-only distributions; use all ranks for the full retained-neighbor distribution.
-- `distribution_summary.csv`: mean, standard deviation, and quantiles for each score distribution.
-- `distribution_histograms.csv`: fixed-width histogram bins over the `[0, 1]` score range for every distribution.
-- `distribution_tests.csv`: adjacent peak-count comparisons using two-sample KS statistic, asymptotic KS p-value, and 1D Wasserstein distance.
-- `distribution_grid.csv`: the full pairwise peak-count comparison grid for heatmap visualization of the same distance/test columns.
-- `pathway_scores.csv`: optional cosine-sum scores from each query to each NPC pathway representative group, emitted when `--pathway-representatives-per-class` is greater than zero.
-- `pathway_predictions.csv`: optional best-pathway predictions from the representative cosine sums.
+- `similarities.parquet`: one row per query, retained peak count, similarity config, and retained neighbor. Use `rank == 1` for best-neighbor-only distributions; use all ranks for the full retained-neighbor distribution.
+- `distribution_summary.parquet`: mean, standard deviation, and quantiles for each score distribution.
+- `distribution_histograms.parquet`: fixed-width histogram bins over the `[0, 1]` score range for every distribution.
+- `distribution_tests.parquet`: adjacent peak-count comparisons using two-sample KS statistic, asymptotic KS p-value, and 1D Wasserstein distance.
+- `distribution_grid.parquet`: the full pairwise peak-count comparison grid as a long table.
+- `distribution_grid.npz`: dense NumPy matrices shaped as `similarity_config x peak_count_a x peak_count_b` for heatmap visualization.
+- `distribution_grid_configs.parquet`: config-axis metadata for `distribution_grid.npz`.
+- `pathway_scores.parquet`: optional cosine-sum scores from each query to each NPC pathway representative group, emitted when `--pathway-representatives-per-class` is greater than zero.
+- `pathway_predictions.parquet`: optional best-pathway predictions from the representative cosine sums.
 
-The peak-count grid is always `1..=128`, so `distribution_grid.csv` is a full `128 x 128` comparison grid. `--row-sample-size` samples query rows, while `--reference-sample-size` samples the fixed reference columns used by nearest-neighbor search. The selected query and reference ids are reused across every peak count, so distribution changes are attributable to peak retention rather than changing samples.
+The peak-count grid is always `1..=128`, so `distribution_grid.npz` contains full `128 x 128` matrices. `--row-sample-size` samples query rows, while `--reference-sample-size` samples the fixed reference columns used by nearest-neighbor search. The selected query and reference ids are reused across every peak count, so distribution changes are attributable to peak retention rather than changing samples.
 
 The current distribution comparisons avoid assuming a parametric score family. The nonparametric outputs include empirical quantiles, fixed-bin histograms, two-sample KS statistic, asymptotic KS p-value, and 1D Wasserstein distance.
