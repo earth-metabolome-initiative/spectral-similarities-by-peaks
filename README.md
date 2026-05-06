@@ -1,5 +1,9 @@
 # spectral-similarities-by-peaks
 
+[![CI](https://github.com/earth-metabolome-initiative/spectral-similarities-by-peaks/actions/workflows/ci.yml/badge.svg)](https://github.com/earth-metabolome-initiative/spectral-similarities-by-peaks/actions/workflows/ci.yml)
+[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Experiment on measuring when MS2 spectral similarity distributions stop changing as fewer or more fragment peaks are retained.
 
 The first executable slice is a Rust CLI that:
