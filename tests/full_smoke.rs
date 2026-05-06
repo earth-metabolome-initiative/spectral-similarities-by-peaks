@@ -31,8 +31,6 @@ fn full_scan_smoke_test_produces_expected_artifacts() -> Result<(), Box<dyn Erro
         output_dir
             .to_str()
             .ok_or("temporary output directory path is not valid UTF-8")?,
-        "--peak-counts",
-        "4,8,16",
         "--similarity-config",
         "cosine:0.0:1.0",
         "--similarity-config",
@@ -56,13 +54,13 @@ fn full_scan_smoke_test_produces_expected_artifacts() -> Result<(), Box<dyn Erro
     ])?;
     run::run(cli)?;
 
-    assert_csv_rows(&output_dir.join("similarities.csv"), 324)?;
-    assert_csv_rows(&output_dir.join("distribution_summary.csv"), 9)?;
-    assert_csv_rows(&output_dir.join("distribution_histograms.csv"), 45)?;
-    assert_csv_rows(&output_dir.join("distribution_tests.csv"), 6)?;
-    assert_csv_rows(&output_dir.join("distribution_grid.csv"), 27)?;
-    assert_csv_rows(&output_dir.join("pathway_scores.csv"), 288)?;
-    assert_csv_rows(&output_dir.join("pathway_predictions.csv"), 72)?;
+    assert_csv_rows(&output_dir.join("similarities.csv"), 13_824)?;
+    assert_csv_rows(&output_dir.join("distribution_summary.csv"), 384)?;
+    assert_csv_rows(&output_dir.join("distribution_histograms.csv"), 1_920)?;
+    assert_csv_rows(&output_dir.join("distribution_tests.csv"), 381)?;
+    assert_csv_rows(&output_dir.join("distribution_grid.csv"), 49_152)?;
+    assert_csv_rows(&output_dir.join("pathway_scores.csv"), 12_288)?;
+    assert_csv_rows(&output_dir.join("pathway_predictions.csv"), 3_072)?;
 
     fs::remove_dir_all(root)?;
     Ok(())
@@ -100,6 +98,10 @@ fn scan_help_is_available() -> Result<(), Box<dyn Error>> {
     assert!(
         stdout.contains("--reference-sample-size"),
         "missing reference sampling flag: {stdout}"
+    );
+    assert!(
+        !stdout.contains("--peak-counts"),
+        "peak-count narrowing must not be exposed: {stdout}"
     );
     Ok(())
 }

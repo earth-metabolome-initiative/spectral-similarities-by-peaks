@@ -23,7 +23,6 @@ cargo run --release -- scan \
   --max-spectra 1000 \
   --row-sample-size 200 \
   --reference-sample-size 1000 \
-  --peak-counts 8,16,32 \
   --neighbors 10 \
   --mz-tolerance 0.05 \
   --pathway-representatives-per-class 5 \
@@ -56,7 +55,6 @@ cargo run --release -- scan \
   --gems-parts 0 \
   --row-sample-size 10000 \
   --reference-sample-size 100000 \
-  --peak-counts 8,16,32,64,128 \
   --neighbors 10 \
   --output-dir results/gems-part-0
 ```
@@ -71,6 +69,6 @@ Outputs:
 - `pathway_scores.csv`: optional cosine-sum scores from each query to each NPC pathway representative group, emitted when `--pathway-representatives-per-class` is greater than zero.
 - `pathway_predictions.csv`: optional best-pathway predictions from the representative cosine sums.
 
-The default peak-count grid is `1..=128`, so `distribution_grid.csv` is a full `128 x 128` comparison grid unless `--peak-counts` narrows it. `--row-sample-size` samples query rows, while `--reference-sample-size` samples the fixed reference columns used by nearest-neighbor search. The selected query and reference ids are reused across every peak count, so distribution changes are attributable to peak retention rather than changing samples.
+The peak-count grid is always `1..=128`, so `distribution_grid.csv` is a full `128 x 128` comparison grid. `--row-sample-size` samples query rows, while `--reference-sample-size` samples the fixed reference columns used by nearest-neighbor search. The selected query and reference ids are reused across every peak count, so distribution changes are attributable to peak retention rather than changing samples.
 
 The current distribution comparisons avoid assuming a parametric score family. The nonparametric outputs include empirical quantiles, fixed-bin histograms, two-sample KS statistic, asymptotic KS p-value, and 1D Wasserstein distance.

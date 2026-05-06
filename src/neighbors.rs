@@ -497,7 +497,6 @@ mod tests {
             dataset: DatasetName::Harmonized,
             data_dir: PathBuf::from("data"),
             output_dir: PathBuf::from("results"),
-            peak_counts: vec![2],
             similarity_configs: Vec::new(),
             mz_tolerance: 0.1,
             neighbors: 1,

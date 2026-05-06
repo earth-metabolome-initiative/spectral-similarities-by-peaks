@@ -17,6 +17,9 @@ use crate::{
     spectra::{prepare_spectra, select_query_ids, select_reference_ids},
 };
 
+/// Maximum top-intensity peak count evaluated by every scan.
+const MAX_PEAK_COUNT: usize = 128;
+
 /// Dispatch parsed command-line arguments to the selected command.
 ///
 /// # Errors
@@ -49,8 +52,8 @@ fn run_scan(mut args: ScanArgs) -> Result<()> {
     let mut writers = OutputWriters::create(&args.output_dir)?;
 
     for config in &args.similarity_configs {
-        let mut distributions = Vec::with_capacity(args.peak_counts.len());
-        for &peak_count in &args.peak_counts {
+        let mut distributions = Vec::with_capacity(MAX_PEAK_COUNT);
+        for peak_count in 1..=MAX_PEAK_COUNT {
             let spectra = prepare_spectra(
                 &records,
                 peak_count,

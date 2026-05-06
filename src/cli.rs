@@ -7,18 +7,6 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::model::{DatasetName, Metric, SimilarityConfig};
 
-/// Peak-count cutoffs evaluated when the user does not provide cutoffs.
-const DEFAULT_PEAK_COUNTS: &str = concat!(
-    "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,",
-    "17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,",
-    "33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,",
-    "49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,",
-    "65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,",
-    "81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,",
-    "97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,",
-    "113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128"
-);
-
 /// Similarity configurations evaluated when no explicit configuration is given.
 const DEFAULT_SIMILARITY_CONFIGS: &[&str] = &[
     "cosine:0.0:1.0",
@@ -55,9 +43,6 @@ pub struct ScanArgs {
     /// Output directory for CSV artifacts.
     #[arg(long, default_value = "results")]
     pub output_dir: PathBuf,
-    /// Top peak cutoffs to evaluate, comma-separated.
-    #[arg(long, value_delimiter = ',', default_value = DEFAULT_PEAK_COUNTS)]
-    pub peak_counts: Vec<usize>,
     /// Similarity config as `metric:mz_power:intensity_power[:weighted]`.
     #[arg(long = "similarity-config", default_values = DEFAULT_SIMILARITY_CONFIGS)]
     pub similarity_configs: Vec<SimilarityConfig>,
@@ -104,9 +89,7 @@ impl ScanArgs {
     ///
     /// # Errors
     ///
-    /// Returns an error when numeric arguments are outside the supported range,
-    /// when no peak counts or similarity configurations are provided, or when
-    /// a parsed similarity configuration is internally invalid.
+    /// Returns an error when numeric arguments are outside the supported range.
     pub fn validate(&mut self) -> Result<()> {
         if self.neighbors == 0 {
             bail!("--neighbors must be greater than zero");
@@ -124,12 +107,6 @@ impl ScanArgs {
             if !pepmass_tolerance.is_finite() || pepmass_tolerance < 0.0 {
                 bail!("--pepmass-tolerance must be finite and non-negative");
             }
-        }
-
-        self.peak_counts.sort_unstable();
-        self.peak_counts.dedup();
-        if self.peak_counts.is_empty() || self.peak_counts.contains(&0) {
-            bail!("--peak-counts must contain positive values");
         }
         Ok(())
     }
