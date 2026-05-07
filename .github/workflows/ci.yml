@@ -67,6 +67,9 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -100,4 +103,15 @@ jobs:
           fi
 
       - name: Measure coverage
-        run: cargo tarpaulin --locked --engine llvm --lib --test full_smoke --out Stdout
+        run: |
+          cargo tarpaulin --locked --engine llvm --lib --test full_smoke \
+            --out Stdout Xml \
+            --output-dir coverage
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage/cobertura.xml
+          flags: rust
+          fail_ci_if_error: true
+          use_oidc: true
