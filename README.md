@@ -15,18 +15,29 @@ The first executable slice is a Rust CLI that:
 - writes raw neighbor scores, per-cutoff histograms, adjacent peak-count comparisons, and full pairwise peak-count comparison grids.
 - optionally scores NPC pathways by summing cosine similarity to a fixed number of pathway representatives.
 
-Example smoke run on a small harmonized subset:
+Experiment runs:
+
+Harmonized full run with pathway representative scoring:
 
 ```bash
 cargo run --release -- scan \
   --dataset harmonized \
-  --max-spectra 1000 \
-  --row-sample-size 200 \
-  --reference-sample-size 1000 \
-  --neighbors 10 \
+  --neighbors 64 \
   --mz-tolerance 0.05 \
   --pathway-representatives-per-class 5 \
-  --output-dir results/smoke
+  --output-dir results/harmonized-full
+```
+
+GeMS-A10 sampled run across all parts:
+
+```bash
+cargo run --release -- scan \
+  --dataset gems \
+  --row-sample-size 10000 \
+  --reference-sample-size 100000 \
+  --neighbors 64 \
+  --mz-tolerance 0.05 \
+  --output-dir results/gems-sampled
 ```
 
 Full local smoke test:
@@ -36,28 +47,6 @@ cargo test --test full_smoke
 ```
 
 This runs a deterministic end-to-end synthetic scan by parsing the CLI in-process and dispatching the crate directly. It checks the generated Parquet, NumPy, SVG, and PNG artifacts plus CLI help output. The synthetic scan avoids dataset downloads while still exercising spectrum preparation, cosine and entropy scoring, fixed reference sampling, top-k neighbor collection, distribution summaries, histograms, full comparison grids, heatmap rendering, and pathway scoring.
-
-Full local verification:
-
-```bash
-cargo fmt --check
-cargo check
-cargo clippy --all-targets -- -D warnings
-RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
-cargo test
-```
-
-Useful GeMS iteration starts with one or a few parts:
-
-```bash
-cargo run --release -- scan \
-  --dataset gems \
-  --gems-parts 0 \
-  --row-sample-size 10000 \
-  --reference-sample-size 100000 \
-  --neighbors 10 \
-  --output-dir results/gems-part-0
-```
 
 Outputs:
 
