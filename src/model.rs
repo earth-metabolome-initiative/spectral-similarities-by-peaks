@@ -4,7 +4,7 @@
 use std::fmt;
 
 use mass_spectrometry::prelude::GenericSpectrum;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Dataset supported by the experiment runner.
@@ -255,7 +255,7 @@ pub struct PathwayPrediction {
     pub candidate_pathways: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 /// Score distribution retained for comparing one peak count to the next.
 pub struct ScoreDistribution {
     /// Retained peak count.

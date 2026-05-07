@@ -1,6 +1,8 @@
 //! Library entry points for measuring how `MS2` similarity distributions
 //! change as spectra are truncated to different peak counts.
 
+/// Resumable score-distribution checkpoints.
+mod checkpoint;
 /// Command-line argument parsing and value conversion.
 pub mod cli;
 /// Dataset loading and conversion into local records.

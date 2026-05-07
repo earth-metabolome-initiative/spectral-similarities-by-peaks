@@ -11,6 +11,7 @@ readme = "README.md"
 anyhow = "1"
 arrow-array = "56"
 arrow-schema = "56"
+bincode = "1.3"
 clap = { version = "4.5", features = ["derive"] }
 colorous = "1"
 indicatif = "0.18"
@@ -19,7 +20,7 @@ mass_spectrometry = { git = "https://github.com/earth-metabolome-initiative/mass
 ndarray = "0.16"
 ndarray-npy = "0.9"
 parquet = { version = "56", features = ["arrow"] }
-plotters = { version = "0.3", default-features = false, features = ["bitmap_backend", "bitmap_encoder", "svg_backend", "ttf"] }
+plotters = { version = "0.3", default-features = false, features = ["ab_glyph", "bitmap_backend", "bitmap_encoder", "svg_backend"] }
 pollster = "0.4"
 rand = "0.9"
 rand_chacha = "0.9"

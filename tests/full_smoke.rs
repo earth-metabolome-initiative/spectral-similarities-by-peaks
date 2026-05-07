@@ -22,7 +22,34 @@ fn full_scan_smoke_test_produces_expected_artifacts() -> Result<(), Box<dyn Erro
     let output_dir = root.join("out");
     fs::create_dir_all(&data_dir)?;
 
-    let cli = Cli::try_parse_from([
+    let cli = smoke_scan_cli(&data_dir, &output_dir)?;
+    run::run(cli)?;
+    assert_distribution_checkpoints(&output_dir)?;
+
+    let cli = smoke_scan_cli(&data_dir, &output_dir)?;
+    run::run(cli)?;
+
+    assert!(
+        !output_dir.join("similarities.parquet").exists(),
+        "raw similarity hits should not be persisted"
+    );
+    assert_parquet_rows(&output_dir.join("distribution_summary.parquet"), 384)?;
+    assert_parquet_rows(&output_dir.join("distribution_histograms.parquet"), 1_920)?;
+    assert_parquet_rows(&output_dir.join("distribution_tests.parquet"), 381)?;
+    assert_parquet_rows(&output_dir.join("distribution_grid.parquet"), 49_152)?;
+    assert_parquet_rows(&output_dir.join("distribution_grid_configs.parquet"), 3)?;
+    assert_parquet_rows(&output_dir.join("pathway_scores.parquet"), 12_288)?;
+    assert_parquet_rows(&output_dir.join("pathway_predictions.parquet"), 3_072)?;
+    assert_grid_npz_shapes(&output_dir.join("distribution_grid.npz"))?;
+    assert_heatmap_artifacts(&output_dir)?;
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+/// Build the deterministic synthetic scan command used by the full smoke test.
+fn smoke_scan_cli(data_dir: &Path, output_dir: &Path) -> Result<Cli, Box<dyn Error>> {
+    Ok(Cli::try_parse_from([
         "spectral-similarities-by-peaks",
         "scan",
         "--dataset",
@@ -55,25 +82,7 @@ fn full_scan_smoke_test_produces_expected_artifacts() -> Result<(), Box<dyn Erro
         "18",
         "--seed",
         "42",
-    ])?;
-    run::run(cli)?;
-
-    assert!(
-        !output_dir.join("similarities.parquet").exists(),
-        "raw similarity hits should not be persisted"
-    );
-    assert_parquet_rows(&output_dir.join("distribution_summary.parquet"), 384)?;
-    assert_parquet_rows(&output_dir.join("distribution_histograms.parquet"), 1_920)?;
-    assert_parquet_rows(&output_dir.join("distribution_tests.parquet"), 381)?;
-    assert_parquet_rows(&output_dir.join("distribution_grid.parquet"), 49_152)?;
-    assert_parquet_rows(&output_dir.join("distribution_grid_configs.parquet"), 3)?;
-    assert_parquet_rows(&output_dir.join("pathway_scores.parquet"), 12_288)?;
-    assert_parquet_rows(&output_dir.join("pathway_predictions.parquet"), 3_072)?;
-    assert_grid_npz_shapes(&output_dir.join("distribution_grid.npz"))?;
-    assert_heatmap_artifacts(&output_dir)?;
-
-    fs::remove_dir_all(root)?;
-    Ok(())
+    ])?)
 }
 
 #[test]
@@ -124,6 +133,25 @@ fn smoke_root() -> Result<PathBuf, Box<dyn Error>> {
         std::process::id(),
         timestamp.as_nanos()
     )))
+}
+
+/// Assert that every score-distribution checkpoint was written.
+fn assert_distribution_checkpoints(output_dir: &Path) -> Result<(), Box<dyn Error>> {
+    for config in [
+        "cosine_mz0.000_int1.000",
+        "cosine_mz1.000_int0.500",
+        "entropy_mz0.000_int1.000_weightedtrue",
+    ] {
+        for peak_count in 1..=128 {
+            let path = output_dir
+                .join("distributions")
+                .join(config)
+                .join(format!("top_{peak_count:03}.bincode"));
+            let metadata = fs::metadata(&path)?;
+            assert!(metadata.len() > 0, "{} is empty", path.display());
+        }
+    }
+    Ok(())
 }
 
 /// Assert that a Parquet file exists, is non-empty, and has the expected row count.

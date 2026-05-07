@@ -7,8 +7,10 @@
 )]
 
 use std::{
-    fs,
+    env, fs,
+    io::ErrorKind,
     path::{Path, PathBuf},
+    sync::OnceLock,
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -20,7 +22,7 @@ use plotters::{
         BitMapBackend, ChartBuilder, DrawingArea, DrawingBackend, IntoDrawingArea, RGBColor,
         Rectangle, SVGBackend, WHITE,
     },
-    style::Color,
+    style::{Color, FontStyle, register_font},
 };
 
 use crate::{
@@ -42,6 +44,21 @@ const NON_FINITE_COLOR: RGBColor = RGBColor(180, 180, 180);
 /// Number of rendered metrics per similarity configuration.
 const HEATMAP_METRIC_COUNT: usize = 4;
 
+/// Environment variable that may point to a TrueType or OpenType font file.
+const HEATMAP_FONT_ENV_VAR: &str = "SPECTRAL_SIMILARITIES_FONT";
+
+/// Common Linux sans-serif fonts used when no explicit font path is configured.
+const HEATMAP_FONT_CANDIDATES: &[&str] = &[
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSans-Regular.ttf",
+];
+
+/// Cached result of registering the Plotters sans-serif font.
+static HEATMAP_FONT_REGISTRATION: OnceLock<std::result::Result<(), String>> = OnceLock::new();
+
 /// Write SVG and PNG heatmaps for each dense grid matrix and config.
 pub fn write_heatmaps(
     output_dir: &Path,
@@ -50,6 +67,7 @@ pub fn write_heatmaps(
     progress: &ScanProgress,
 ) -> Result<()> {
     validate_config_axis(configs, arrays)?;
+    ensure_heatmap_font()?;
     let output_dir = output_dir.join("heatmaps");
     fs::create_dir_all(&output_dir)
         .with_context(|| format!("creating {}", output_dir.display()))?;
@@ -75,6 +93,53 @@ pub fn write_heatmaps(
     }
     task.finish();
     Ok(())
+}
+
+/// Ensure Plotters can render text without native fontconfig or `FreeType` bindings.
+fn ensure_heatmap_font() -> Result<()> {
+    match HEATMAP_FONT_REGISTRATION.get_or_init(register_heatmap_font) {
+        Ok(()) => Ok(()),
+        Err(message) => bail!("{message}"),
+    }
+}
+
+/// Register the configured or first available system sans-serif font.
+fn register_heatmap_font() -> std::result::Result<(), String> {
+    if let Some(path) = env::var_os(HEATMAP_FONT_ENV_VAR) {
+        let path = PathBuf::from(path);
+        return register_heatmap_font_path(&path).map_err(|error| {
+            format!(
+                "failed to register font from {HEATMAP_FONT_ENV_VAR}={}: {error}",
+                path.display()
+            )
+        });
+    }
+
+    for path in HEATMAP_FONT_CANDIDATES.iter().map(Path::new) {
+        match fs::read(path) {
+            Ok(bytes) => return register_heatmap_font_bytes(path, bytes),
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("failed to read {}: {error}", path.display())),
+        }
+    }
+
+    Err(format!(
+        "no usable sans-serif font found; install fonts-dejavu-core or set {HEATMAP_FONT_ENV_VAR}"
+    ))
+}
+
+/// Read and register one font file as Plotters' `sans-serif` family.
+fn register_heatmap_font_path(path: &Path) -> std::result::Result<(), String> {
+    let bytes =
+        fs::read(path).map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    register_heatmap_font_bytes(path, bytes)
+}
+
+/// Register in-memory font bytes as Plotters' `sans-serif` family.
+fn register_heatmap_font_bytes(path: &Path, bytes: Vec<u8>) -> std::result::Result<(), String> {
+    let leaked = Box::leak(bytes.into_boxed_slice());
+    register_font("sans-serif", FontStyle::Normal, leaked)
+        .map_err(|_| format!("{} is not a valid TrueType/OpenType font", path.display()))
 }
 
 /// Validate that all dense matrices share the same config axis.
