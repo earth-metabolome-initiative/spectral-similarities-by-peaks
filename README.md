@@ -35,7 +35,7 @@ Full local smoke test:
 cargo test --test full_smoke
 ```
 
-This runs a deterministic end-to-end synthetic scan by parsing the CLI in-process and dispatching the crate directly. It checks the generated Parquet and NumPy artifacts plus CLI help output. The synthetic scan avoids dataset downloads while still exercising spectrum preparation, cosine and entropy scoring, fixed reference sampling, top-k neighbor collection, distribution summaries, histograms, full comparison grids, and pathway scoring.
+This runs a deterministic end-to-end synthetic scan by parsing the CLI in-process and dispatching the crate directly. It checks the generated Parquet, NumPy, SVG, and PNG artifacts plus CLI help output. The synthetic scan avoids dataset downloads while still exercising spectrum preparation, cosine and entropy scoring, fixed reference sampling, top-k neighbor collection, distribution summaries, histograms, full comparison grids, heatmap rendering, and pathway scoring.
 
 Full local verification:
 
@@ -68,6 +68,7 @@ Outputs:
 - `distribution_grid.parquet`: the full pairwise peak-count comparison grid as a long table.
 - `distribution_grid.npz`: dense NumPy matrices shaped as `similarity_config x peak_count_a x peak_count_b` for heatmap visualization.
 - `distribution_grid_configs.parquet`: config-axis metadata for `distribution_grid.npz`.
+- `heatmaps/<config>/*.svg` and `heatmaps/<config>/*.png`: static heatmaps for mean delta, KS statistic, asymptotic KS p-value, and 1D Wasserstein distance.
 - `pathway_scores.parquet`: optional cosine-sum scores from each query to each NPC pathway representative group, emitted when `--pathway-representatives-per-class` is greater than zero.
 - `pathway_predictions.parquet`: optional best-pathway predictions from the representative cosine sums.
 

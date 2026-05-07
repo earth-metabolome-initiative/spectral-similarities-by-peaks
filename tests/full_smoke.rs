@@ -3,6 +3,7 @@
 use std::{
     error::Error,
     fs,
+    io::Read,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -66,6 +67,7 @@ fn full_scan_smoke_test_produces_expected_artifacts() -> Result<(), Box<dyn Erro
     assert_parquet_rows(&output_dir.join("pathway_scores.parquet"), 12_288)?;
     assert_parquet_rows(&output_dir.join("pathway_predictions.parquet"), 3_072)?;
     assert_grid_npz_shapes(&output_dir.join("distribution_grid.npz"))?;
+    assert_heatmap_artifacts(&output_dir)?;
 
     fs::remove_dir_all(root)?;
     Ok(())
@@ -153,5 +155,50 @@ fn assert_grid_npz_shapes(path: &Path) -> Result<(), Box<dyn Error>> {
     assert_eq!(ks_pvalue.shape(), &[3, 128, 128]);
     assert_eq!(wasserstein.shape(), &[3, 128, 128]);
     assert_eq!(mean_delta.shape(), &[3, 128, 128]);
+    Ok(())
+}
+
+/// Assert that every smoke-test heatmap was written in SVG and PNG form.
+fn assert_heatmap_artifacts(output_dir: &Path) -> Result<(), Box<dyn Error>> {
+    for config in [
+        "cosine_mz0.000_int1.000",
+        "cosine_mz1.000_int0.500",
+        "entropy_mz0.000_int1.000_weightedtrue",
+    ] {
+        for metric in [
+            "mean_delta",
+            "ks_statistic",
+            "ks_pvalue_asymptotic",
+            "wasserstein_1d",
+        ] {
+            let stem = output_dir.join("heatmaps").join(config).join(metric);
+            assert_svg_artifact(&stem.with_extension("svg"))?;
+            assert_png_artifact(&stem.with_extension("png"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Assert that an SVG heatmap exists and contains an SVG root.
+fn assert_svg_artifact(path: &Path) -> Result<(), Box<dyn Error>> {
+    let metadata = fs::metadata(path)?;
+    assert!(metadata.len() > 0, "{} is empty", path.display());
+    let content = fs::read_to_string(path)?;
+    assert!(content.contains("<svg"), "{} is not SVG", path.display());
+    Ok(())
+}
+
+/// Assert that a PNG heatmap exists and starts with the PNG signature.
+fn assert_png_artifact(path: &Path) -> Result<(), Box<dyn Error>> {
+    let metadata = fs::metadata(path)?;
+    assert!(metadata.len() > 0, "{} is empty", path.display());
+    let mut signature = [0_u8; 8];
+    fs::File::open(path)?.read_exact(&mut signature)?;
+    assert_eq!(
+        signature,
+        [137, 80, 78, 71, 13, 10, 26, 10],
+        "{} is not PNG",
+        path.display()
+    );
     Ok(())
 }

@@ -11,88 +11,79 @@ use rayon::prelude::*;
 use crate::{
     cli::ScanArgs,
     model::{LoadedRecord, Metric, NeighborHit, SimilarityConfig},
-    progress::progress_bar,
+    progress::ScanProgress,
 };
 
+/// Inputs for one top-neighbor search batch.
+pub struct SearchBatch<'a> {
+    /// Scan arguments that configure tolerances and retained neighbors.
+    pub args: &'a ScanArgs,
+    /// Shared scan progress reporter.
+    pub progress: &'a ScanProgress,
+    /// Similarity configuration being evaluated.
+    pub config: &'a SimilarityConfig,
+    /// Retained top-intensity peak count.
+    pub peak_count: usize,
+    /// Loaded metadata records.
+    pub records: &'a [LoadedRecord],
+    /// Prepared spectra aligned to `records`.
+    pub spectra: &'a [GenericSpectrum],
+    /// Query row ids for this batch.
+    pub query_ids: &'a [usize],
+    /// Reference row ids for this batch.
+    pub reference_ids: &'a [usize],
+}
+
 /// Compute retained non-self neighbor hits for one similarity configuration.
-pub fn compute_neighbors(
-    args: &ScanArgs,
-    config: &SimilarityConfig,
-    peak_count: usize,
-    records: &[LoadedRecord],
-    spectra: &[GenericSpectrum],
-    query_ids: &[usize],
-    reference_ids: &[usize],
-) -> Result<Vec<NeighborHit>> {
-    match config.metric {
-        Metric::Cosine => compute_cosine_neighbors(
-            args,
-            config,
-            peak_count,
-            records,
-            spectra,
-            query_ids,
-            reference_ids,
-        ),
-        Metric::Entropy => compute_entropy_neighbors(
-            args,
-            config,
-            peak_count,
-            records,
-            spectra,
-            query_ids,
-            reference_ids,
-        ),
+pub fn compute_neighbors(batch: &SearchBatch<'_>) -> Result<Vec<NeighborHit>> {
+    match batch.config.metric {
+        Metric::Cosine => compute_cosine_neighbors(batch),
+        Metric::Entropy => compute_entropy_neighbors(batch),
     }
 }
 
 /// Compute cosine neighbors using the crate-provided self-similarity row index.
-fn compute_cosine_neighbors(
-    args: &ScanArgs,
-    config: &SimilarityConfig,
-    peak_count: usize,
-    records: &[LoadedRecord],
-    spectra: &[GenericSpectrum],
-    query_ids: &[usize],
-    reference_ids: &[usize],
-) -> Result<Vec<NeighborHit>> {
-    if !uses_full_reference_panel(reference_ids, records.len()) {
-        return compute_cosine_reference_neighbors(
-            args,
-            config,
-            peak_count,
-            records,
-            spectra,
-            query_ids,
-            reference_ids,
-        );
+fn compute_cosine_neighbors(batch: &SearchBatch<'_>) -> Result<Vec<NeighborHit>> {
+    if !uses_full_reference_panel(batch.reference_ids, batch.records.len()) {
+        return compute_cosine_reference_neighbors(batch);
     }
 
     let mut builder = FlashCosineSelfSimilarityIndex::<f64>::builder()
-        .mz_power(config.mz_power)
-        .intensity_power(config.intensity_power)
-        .mz_tolerance(args.mz_tolerance)
-        .score_threshold(args.score_threshold)
-        .top_k(args.neighbors)
+        .mz_power(batch.config.mz_power)
+        .intensity_power(batch.config.intensity_power)
+        .mz_tolerance(batch.args.mz_tolerance)
+        .score_threshold(batch.args.score_threshold)
+        .top_k(batch.args.neighbors)
         .parallel();
-    let pepmass_tolerance = args
+    let pepmass_tolerance = batch
+        .args
         .pepmass_tolerance
-        .unwrap_or_else(|| broad_pepmass_tolerance(spectra));
+        .unwrap_or_else(|| broad_pepmass_tolerance(batch.spectra));
     builder = builder.pepmass_tolerance(pepmass_tolerance)?;
-    let index = builder.build(spectra)?;
-    let config_name = config.name();
+    let config_name = batch.config.name();
+    let index_progress = batch.progress.spinner(format!(
+        "building {config_name} self-similarity index for top {} peaks",
+        batch.peak_count
+    ));
+    let index = builder.build(batch.spectra)?;
+    index_progress.finish();
     let hit_context = HitContext {
-        args,
-        config,
+        args: batch.args,
+        config: batch.config,
         config_name: &config_name,
-        peak_count,
-        records,
+        peak_count: batch.peak_count,
+        records: batch.records,
     };
-    let query_ids = query_ids
+    let query_ids = batch
+        .query_ids
         .iter()
         .map(|&query_id| u32::try_from(query_id).context("query index does not fit u32"))
         .collect::<Result<Vec<_>>>()?;
 
+    let scoring_progress = batch.progress.bar(
+        u64::try_from(query_ids.len()).unwrap_or(u64::MAX),
+        format!("scoring {config_name} top {} peaks", batch.peak_count),
+    );
     let chunks = index
         .rows()
         .ids(&query_ids)
@@ -101,52 +92,54 @@ fn compute_cosine_neighbors(
             let (query_id, hits) = row.context("computing cosine self-similarity row")?;
             let query_index =
                 usize::try_from(query_id).context("query index does not fit usize")?;
-            hits.into_iter()
+            let hits = hits
+                .into_iter()
                 .enumerate()
                 .map(|(rank, hit)| {
                     let target_index = usize::try_from(hit.spectrum_id)
                         .context("target index does not fit usize")?;
                     neighbor_hit(&hit_context, query_index, target_index, hit, rank + 1)
                 })
-                .collect()
+                .collect();
+            scoring_progress.inc(1);
+            hits
         })
         .collect::<Result<Vec<_>>>()?;
+    scoring_progress.finish();
 
     Ok(chunks.into_iter().flatten().collect())
 }
 
 /// Compute cosine neighbors against a fixed sampled reference panel.
-fn compute_cosine_reference_neighbors(
-    args: &ScanArgs,
-    config: &SimilarityConfig,
-    peak_count: usize,
-    records: &[LoadedRecord],
-    spectra: &[GenericSpectrum],
-    query_ids: &[usize],
-    reference_ids: &[usize],
-) -> Result<Vec<NeighborHit>> {
-    let reference_spectra = reference_spectra(spectra, reference_ids);
+fn compute_cosine_reference_neighbors(batch: &SearchBatch<'_>) -> Result<Vec<NeighborHit>> {
+    let reference_spectra = reference_spectra(batch.spectra, batch.reference_ids);
     let mut builder = FlashCosineThresholdIndex::<f64>::builder()
-        .mz_power(config.mz_power)
-        .intensity_power(config.intensity_power)
-        .mz_tolerance(args.mz_tolerance)
-        .score_threshold(args.score_threshold)
+        .mz_power(batch.config.mz_power)
+        .intensity_power(batch.config.intensity_power)
+        .mz_tolerance(batch.args.mz_tolerance)
+        .score_threshold(batch.args.score_threshold)
         .parallel();
-    if let Some(pepmass_tolerance) = args.pepmass_tolerance {
+    if let Some(pepmass_tolerance) = batch.args.pepmass_tolerance {
         builder = builder.pepmass_tolerance(pepmass_tolerance)?;
     }
+    let config_name = batch.config.name();
+    let index_progress = batch.progress.spinner(format!(
+        "building {config_name} reference index for top {} peaks",
+        batch.peak_count
+    ));
     let index = builder.build(&reference_spectra)?;
+    index_progress.finish();
     collect_external_neighbors(
-        args,
-        config,
-        peak_count,
-        records,
-        spectra,
-        query_ids,
-        reference_ids,
+        batch,
         || index.new_search_state(),
         |query, state, top_k_state, emit| {
-            index.for_each_top_k_with_state(query, args.neighbors + 1, state, top_k_state, emit)
+            index.for_each_top_k_with_state(
+                query,
+                batch.args.neighbors + 1,
+                state,
+                top_k_state,
+                emit,
+            )
         },
     )
 }
@@ -164,49 +157,35 @@ fn broad_pepmass_tolerance(spectra: &[GenericSpectrum]) -> f64 {
 }
 
 /// Compute entropy neighbors with the entropy index top-k API.
-fn compute_entropy_neighbors(
-    args: &ScanArgs,
-    config: &SimilarityConfig,
-    peak_count: usize,
-    records: &[LoadedRecord],
-    spectra: &[GenericSpectrum],
-    query_ids: &[usize],
-    reference_ids: &[usize],
-) -> Result<Vec<NeighborHit>> {
-    if !uses_full_reference_panel(reference_ids, records.len()) {
-        return compute_entropy_reference_neighbors(
-            args,
-            config,
-            peak_count,
-            records,
-            spectra,
-            query_ids,
-            reference_ids,
-        );
+fn compute_entropy_neighbors(batch: &SearchBatch<'_>) -> Result<Vec<NeighborHit>> {
+    if !uses_full_reference_panel(batch.reference_ids, batch.records.len()) {
+        return compute_entropy_reference_neighbors(batch);
     }
 
     let mut builder = FlashEntropyIndex::<f64>::builder()
-        .mz_power(config.mz_power)
-        .intensity_power(config.intensity_power)
-        .mz_tolerance(args.mz_tolerance)
-        .weighted(config.entropy_weighted)
+        .mz_power(batch.config.mz_power)
+        .intensity_power(batch.config.intensity_power)
+        .mz_tolerance(batch.args.mz_tolerance)
+        .weighted(batch.config.entropy_weighted)
         .parallel();
-    if let Some(pepmass_tolerance) = args.pepmass_tolerance {
+    if let Some(pepmass_tolerance) = batch.args.pepmass_tolerance {
         builder = builder.pepmass_tolerance(pepmass_tolerance)?;
     }
-    let index = builder.build(spectra)?;
+    let config_name = batch.config.name();
+    let index_progress = batch.progress.spinner(format!(
+        "building {config_name} index for top {} peaks",
+        batch.peak_count
+    ));
+    let index = builder.build(batch.spectra)?;
+    index_progress.finish();
     collect_indexed_neighbors(
-        args,
-        config,
-        peak_count,
-        records,
-        query_ids,
+        batch,
         || index.new_search_state(),
         |query_id, state, top_k_state, emit| {
             index.for_each_top_k_threshold_indexed_with_state(
                 query_id,
-                args.neighbors + 1,
-                args.score_threshold,
+                batch.args.neighbors + 1,
+                batch.args.score_threshold,
                 state,
                 top_k_state,
                 emit,
@@ -216,40 +195,32 @@ fn compute_entropy_neighbors(
 }
 
 /// Compute entropy neighbors against a fixed sampled reference panel.
-fn compute_entropy_reference_neighbors(
-    args: &ScanArgs,
-    config: &SimilarityConfig,
-    peak_count: usize,
-    records: &[LoadedRecord],
-    spectra: &[GenericSpectrum],
-    query_ids: &[usize],
-    reference_ids: &[usize],
-) -> Result<Vec<NeighborHit>> {
-    let reference_spectra = reference_spectra(spectra, reference_ids);
+fn compute_entropy_reference_neighbors(batch: &SearchBatch<'_>) -> Result<Vec<NeighborHit>> {
+    let reference_spectra = reference_spectra(batch.spectra, batch.reference_ids);
     let mut builder = FlashEntropyIndex::<f64>::builder()
-        .mz_power(config.mz_power)
-        .intensity_power(config.intensity_power)
-        .mz_tolerance(args.mz_tolerance)
-        .weighted(config.entropy_weighted)
+        .mz_power(batch.config.mz_power)
+        .intensity_power(batch.config.intensity_power)
+        .mz_tolerance(batch.args.mz_tolerance)
+        .weighted(batch.config.entropy_weighted)
         .parallel();
-    if let Some(pepmass_tolerance) = args.pepmass_tolerance {
+    if let Some(pepmass_tolerance) = batch.args.pepmass_tolerance {
         builder = builder.pepmass_tolerance(pepmass_tolerance)?;
     }
+    let config_name = batch.config.name();
+    let index_progress = batch.progress.spinner(format!(
+        "building {config_name} reference index for top {} peaks",
+        batch.peak_count
+    ));
     let index = builder.build(&reference_spectra)?;
+    index_progress.finish();
     collect_external_neighbors(
-        args,
-        config,
-        peak_count,
-        records,
-        spectra,
-        query_ids,
-        reference_ids,
+        batch,
         || index.new_search_state(),
         |query, state, top_k_state, emit| {
             index.for_each_top_k_threshold_with_state(
                 query,
-                args.neighbors + 1,
-                args.score_threshold,
+                batch.args.neighbors + 1,
+                batch.args.score_threshold,
                 state,
                 top_k_state,
                 emit,
@@ -260,11 +231,7 @@ fn compute_entropy_reference_neighbors(
 
 /// Collect indexed top-k rows into serializable neighbor records.
 fn collect_indexed_neighbors<F, G>(
-    args: &ScanArgs,
-    config: &SimilarityConfig,
-    peak_count: usize,
-    records: &[LoadedRecord],
-    query_ids: &[usize],
+    batch: &SearchBatch<'_>,
     new_search_state: G,
     search: F,
 ) -> Result<Vec<NeighborHit>>
@@ -278,33 +245,34 @@ where
         + Sync,
     G: Fn() -> SearchState + Sync,
 {
-    let config_name = config.name();
-    let progress = progress_bar(
-        u64::try_from(query_ids.len()).unwrap_or(u64::MAX),
-        format!("scoring {config_name} top {peak_count} peaks"),
+    let config_name = batch.config.name();
+    let task = batch.progress.bar(
+        u64::try_from(batch.query_ids.len()).unwrap_or(u64::MAX),
+        format!("scoring {config_name} top {} peaks", batch.peak_count),
     );
     let hit_context = HitContext {
-        args,
-        config,
+        args: batch.args,
+        config: batch.config,
         config_name: &config_name,
-        peak_count,
-        records,
+        peak_count: batch.peak_count,
+        records: batch.records,
     };
 
-    let chunks = query_ids
+    let chunks = batch
+        .query_ids
         .par_iter()
         .map_init(
             || (new_search_state(), TopKSearchState::new()),
             |(state, top_k_state), &query_index| -> Result<Vec<NeighborHit>> {
                 let query_id =
                     u32::try_from(query_index).context("query index does not fit u32")?;
-                let mut raw_hits = Vec::with_capacity(args.neighbors + 1);
+                let mut raw_hits = Vec::with_capacity(batch.args.neighbors + 1);
                 search(query_id, state, top_k_state, &mut |hit| raw_hits.push(hit))?;
 
                 let hits = raw_hits
                     .into_iter()
                     .filter(|hit| usize::try_from(hit.spectrum_id).ok() != Some(query_index))
-                    .take(args.neighbors)
+                    .take(batch.args.neighbors)
                     .enumerate()
                     .map(|(rank, hit)| {
                         let target_index = usize::try_from(hit.spectrum_id)
@@ -312,26 +280,19 @@ where
                         neighbor_hit(&hit_context, query_index, target_index, hit, rank + 1)
                     })
                     .collect::<Result<Vec<_>>>()?;
-                progress.inc(1);
+                task.inc(1);
                 Ok(hits)
             },
         )
         .collect::<Result<Vec<_>>>()?;
-    progress.finish_and_clear();
+    task.finish();
 
     Ok(chunks.into_iter().flatten().collect())
 }
 
 /// Collect external-query top-k rows into serializable neighbor records.
-#[allow(clippy::too_many_arguments)]
 fn collect_external_neighbors<F, G>(
-    args: &ScanArgs,
-    config: &SimilarityConfig,
-    peak_count: usize,
-    records: &[LoadedRecord],
-    spectra: &[GenericSpectrum],
-    query_ids: &[usize],
-    reference_ids: &[usize],
+    batch: &SearchBatch<'_>,
     new_search_state: G,
     search: F,
 ) -> Result<Vec<NeighborHit>>
@@ -345,44 +306,50 @@ where
         + Sync,
     G: Fn() -> SearchState + Sync,
 {
-    let config_name = config.name();
-    let progress = progress_bar(
-        u64::try_from(query_ids.len()).unwrap_or(u64::MAX),
-        format!("scoring {config_name} top {peak_count} peaks"),
+    let config_name = batch.config.name();
+    let task = batch.progress.bar(
+        u64::try_from(batch.query_ids.len()).unwrap_or(u64::MAX),
+        format!("scoring {config_name} top {} peaks", batch.peak_count),
     );
     let hit_context = HitContext {
-        args,
-        config,
+        args: batch.args,
+        config: batch.config,
         config_name: &config_name,
-        peak_count,
-        records,
+        peak_count: batch.peak_count,
+        records: batch.records,
     };
 
-    let chunks = query_ids
+    let chunks = batch
+        .query_ids
         .par_iter()
         .map_init(
             || (new_search_state(), TopKSearchState::new()),
             |(state, top_k_state), &query_index| -> Result<Vec<NeighborHit>> {
-                let mut raw_hits = Vec::with_capacity(args.neighbors + 1);
-                search(&spectra[query_index], state, top_k_state, &mut |hit| {
-                    raw_hits.push(hit);
-                })?;
+                let mut raw_hits = Vec::with_capacity(batch.args.neighbors + 1);
+                search(
+                    &batch.spectra[query_index],
+                    state,
+                    top_k_state,
+                    &mut |hit| {
+                        raw_hits.push(hit);
+                    },
+                )?;
 
                 let hits = raw_hits
                     .into_iter()
-                    .filter_map(|hit| reference_hit_target(reference_ids, query_index, hit))
-                    .take(args.neighbors)
+                    .filter_map(|hit| reference_hit_target(batch.reference_ids, query_index, hit))
+                    .take(batch.args.neighbors)
                     .enumerate()
                     .map(|(rank, (target_index, hit))| {
                         neighbor_hit(&hit_context, query_index, target_index, hit, rank + 1)
                     })
                     .collect::<Result<Vec<_>>>()?;
-                progress.inc(1);
+                task.inc(1);
                 Ok(hits)
             },
         )
         .collect::<Result<Vec<_>>>()?;
-    progress.finish_and_clear();
+    task.finish();
 
     Ok(chunks.into_iter().flatten().collect())
 }
@@ -481,10 +448,11 @@ mod tests {
     use crate::{
         cli::ScanArgs,
         model::{DatasetName, LoadedRecord, SimilarityConfig},
+        progress::ScanProgress,
         spectra::{prepare_spectra, select_query_ids},
     };
 
-    use super::compute_neighbors;
+    use super::{SearchBatch, compute_neighbors};
 
     #[test]
     /// Cosine and entropy searches return non-self positive-scoring hits.
@@ -512,7 +480,8 @@ mod tests {
             synthetic_record("b", 501.0, &[(100.02, 10.0), (200.02, 20.0)])?,
             synthetic_record("c", 502.0, &[(100.04, 9.0), (200.04, 18.0)])?,
         ];
-        let spectra = prepare_spectra(&records, 2, args.mz_tolerance, true)?;
+        let progress = ScanProgress::new();
+        let spectra = prepare_spectra(&progress, &records, 2, args.mz_tolerance, true)?;
         let query_ids = select_query_ids(records.len(), None, args.seed);
         let reference_ids = select_query_ids(records.len(), None, args.seed);
 
@@ -520,15 +489,16 @@ mod tests {
             SimilarityConfig::from_str("cosine:0.0:1.0")?,
             SimilarityConfig::from_str("entropy:0.0:1.0:true")?,
         ] {
-            let hits = compute_neighbors(
-                &args,
-                &config,
-                2,
-                &records,
-                &spectra,
-                &query_ids,
-                &reference_ids,
-            )?;
+            let hits = compute_neighbors(&SearchBatch {
+                args: &args,
+                progress: &progress,
+                config: &config,
+                peak_count: 2,
+                records: &records,
+                spectra: &spectra,
+                query_ids: &query_ids,
+                reference_ids: &reference_ids,
+            })?;
             assert_eq!(hits.len(), records.len());
             assert!(hits.iter().all(|hit| hit.query_index != hit.target_index));
             assert!(hits.iter().all(|hit| hit.score > 0.0));

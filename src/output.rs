@@ -17,6 +17,8 @@ use crate::model::{
     DistributionComparison, DistributionHistogramBin, DistributionSummary, NeighborHit,
     PathwayPrediction, PathwayScore,
 };
+use crate::progress::ScanProgress;
+use crate::visualize::write_heatmaps;
 
 /// Number of peak-count rows and columns in dense grid artifacts.
 const GRID_SIZE: usize = 128;
@@ -148,17 +150,27 @@ impl OutputWriters {
     }
 
     /// Finalize all Parquet files and write dense grid matrices.
-    pub fn finish(mut self) -> Result<()> {
+    pub fn finish(mut self, progress: &ScanProgress) -> Result<()> {
+        let adjacent_progress = progress.spinner("flushing adjacent comparison rows");
         self.flush_adjacent_comparisons()?;
+        adjacent_progress.finish();
+
+        let grid_progress = progress.spinner("flushing full-grid comparison rows");
         self.flush_grid_comparisons()?;
-        self.grid_matrices.write(&self.output_dir)?;
+        grid_progress.finish();
+
+        self.grid_matrices.write(&self.output_dir, progress)?;
+
+        let close_progress = progress.spinner("closing Parquet writers");
         self.similarity.close()?;
         self.summary.close()?;
         self.histogram.close()?;
         self.adjacent_comparison.close()?;
         self.grid_comparison.close()?;
         self.pathway_score.close()?;
-        self.pathway_prediction.close()
+        self.pathway_prediction.close()?;
+        close_progress.finish();
+        Ok(())
     }
 }
 
@@ -238,10 +250,35 @@ impl GridMatrixBuffer {
     }
 
     /// Write dense `NumPy` matrix arrays plus config metadata.
-    fn write(&self, output_dir: &Path) -> Result<()> {
-        write_grid_npz(output_dir, self)?;
-        write_grid_configs(output_dir, self)
+    fn write(&self, output_dir: &Path, progress: &ScanProgress) -> Result<()> {
+        let matrix_progress = progress.spinner("building dense distribution matrices");
+        let arrays = build_grid_arrays(self)?;
+        matrix_progress.finish();
+
+        let npz_progress = progress.spinner("writing distribution_grid.npz");
+        write_grid_npz(output_dir, &arrays)?;
+        npz_progress.finish();
+
+        let config_progress = progress.spinner("writing distribution_grid_configs.parquet");
+        write_grid_configs(output_dir, self)?;
+        config_progress.finish();
+
+        write_heatmaps(output_dir, &self.configs, &arrays, progress)
     }
+}
+
+/// Dense comparison matrices aligned to the config axis.
+pub struct GridArrays {
+    /// One-based retained peak-count axis.
+    pub peak_counts: Array1<u64>,
+    /// Mean-score delta matrix.
+    pub mean_delta: Array3<f64>,
+    /// Kolmogorov-Smirnov statistic matrix.
+    pub ks_statistic: Array3<f64>,
+    /// Asymptotic Kolmogorov-Smirnov p-value matrix.
+    pub ks_pvalue_asymptotic: Array3<f64>,
+    /// One-dimensional Wasserstein-distance matrix.
+    pub wasserstein_1d: Array3<f64>,
 }
 
 /// One dense matrix cell.
@@ -262,8 +299,8 @@ struct GridMatrixEntry {
     wasserstein_1d: f64,
 }
 
-/// Write dense full-grid arrays into `distribution_grid.npz`.
-fn write_grid_npz(output_dir: &Path, buffer: &GridMatrixBuffer) -> Result<()> {
+/// Build dense full-grid arrays from buffered comparison rows.
+fn build_grid_arrays(buffer: &GridMatrixBuffer) -> Result<GridArrays> {
     let shape = (buffer.configs.len(), GRID_SIZE, GRID_SIZE);
     let mut mean_delta = Array3::<f64>::zeros(shape);
     let mut ks_statistic = Array3::<f64>::zeros(shape);
@@ -278,14 +315,25 @@ fn write_grid_npz(output_dir: &Path, buffer: &GridMatrixBuffer) -> Result<()> {
         wasserstein_1d[index] = entry.wasserstein_1d;
     }
 
+    Ok(GridArrays {
+        peak_counts: peak_counts_array()?,
+        mean_delta,
+        ks_statistic,
+        ks_pvalue_asymptotic,
+        wasserstein_1d,
+    })
+}
+
+/// Write dense full-grid arrays into `distribution_grid.npz`.
+fn write_grid_npz(output_dir: &Path, arrays: &GridArrays) -> Result<()> {
     let path = output_dir.join("distribution_grid.npz");
     let file = fs::File::create(&path).with_context(|| format!("creating {}", path.display()))?;
     let mut writer = NpzWriter::new(file);
-    writer.add_array("peak_counts", &peak_counts_array()?)?;
-    writer.add_array("mean_delta", &mean_delta)?;
-    writer.add_array("ks_statistic", &ks_statistic)?;
-    writer.add_array("ks_pvalue_asymptotic", &ks_pvalue_asymptotic)?;
-    writer.add_array("wasserstein_1d", &wasserstein_1d)?;
+    writer.add_array("peak_counts", &arrays.peak_counts)?;
+    writer.add_array("mean_delta", &arrays.mean_delta)?;
+    writer.add_array("ks_statistic", &arrays.ks_statistic)?;
+    writer.add_array("ks_pvalue_asymptotic", &arrays.ks_pvalue_asymptotic)?;
+    writer.add_array("wasserstein_1d", &arrays.wasserstein_1d)?;
     writer.finish()?;
     Ok(())
 }

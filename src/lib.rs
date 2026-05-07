@@ -21,3 +21,5 @@ mod progress;
 pub mod run;
 /// Spectrum sampling and preprocessing utilities.
 mod spectra;
+/// Static heatmap rendering for dense distribution-grid artifacts.
+mod visualize;

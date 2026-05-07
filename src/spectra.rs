@@ -8,7 +8,7 @@ use rand::{SeedableRng, seq::SliceRandom};
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 
-use crate::{model::LoadedRecord, progress::progress_bar};
+use crate::{model::LoadedRecord, progress::ScanProgress};
 
 /// Select query row indices, optionally applying deterministic subsampling.
 pub fn select_query_ids(n_records: usize, row_sample_size: Option<usize>, seed: u64) -> Vec<usize> {
@@ -37,27 +37,30 @@ pub fn select_reference_ids(
 
 /// Build spectra truncated to the requested top-intensity peak count.
 pub fn prepare_spectra(
+    progress: &ScanProgress,
     records: &[LoadedRecord],
     peak_count: usize,
     mz_tolerance: f64,
     merge_close_peaks: bool,
 ) -> Result<Vec<GenericSpectrum>> {
-    let progress = progress_bar(
+    let task = progress.bar(
         u64::try_from(records.len()).unwrap_or(u64::MAX),
         format!("preparing top {peak_count} peaks"),
     );
     let spectra = records
         .par_iter()
         .map(|record| {
-            top_peaks_spectrum(
+            let spectrum = top_peaks_spectrum(
                 &record.spectrum,
                 peak_count,
                 mz_tolerance,
                 merge_close_peaks,
-            )
+            );
+            task.inc(1);
+            spectrum
         })
         .collect::<Result<Vec<_>>>()?;
-    progress.finish_and_clear();
+    task.finish();
     Ok(spectra)
 }
 

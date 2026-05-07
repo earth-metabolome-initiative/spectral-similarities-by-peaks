@@ -11,12 +11,13 @@ use rayon::prelude::*;
 use crate::{
     cli::ScanArgs,
     model::{LoadedRecord, Metric, PathwayPrediction, PathwayScore, SimilarityConfig},
-    progress::progress_bar,
+    progress::ScanProgress,
 };
 
 /// Score query spectra against fixed `NPC` pathway representatives.
 pub fn score_pathway_representatives(
     args: &ScanArgs,
+    progress: &ScanProgress,
     config: &SimilarityConfig,
     peak_count: usize,
     records: &[LoadedRecord],
@@ -46,10 +47,14 @@ pub fn score_pathway_representatives(
     if let Some(pepmass_tolerance) = args.pepmass_tolerance {
         builder = builder.pepmass_tolerance(pepmass_tolerance)?;
     }
-    let index = builder.build(&reference_spectra)?;
-    let pathways = representative_pathways(&representatives);
     let config_name = config.name();
-    let progress = progress_bar(
+    let index_progress = progress.spinner(format!(
+        "building pathway representative index for {config_name} top {peak_count} peaks"
+    ));
+    let index = builder.build(&reference_spectra)?;
+    index_progress.finish();
+    let pathways = representative_pathways(&representatives);
+    let task = progress.bar(
         u64::try_from(query_ids.len()).unwrap_or(u64::MAX),
         format!("pathway scoring {config_name} top {peak_count} peaks"),
     );
@@ -72,12 +77,12 @@ pub fn score_pathway_representatives(
                     &index,
                     state,
                 );
-                progress.inc(1);
+                task.inc(1);
                 rows
             },
         )
         .collect::<Result<Vec<_>>>()?;
-    progress.finish_and_clear();
+    task.finish();
 
     let mut scores = Vec::new();
     let mut predictions = Vec::new();
