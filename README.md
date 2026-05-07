@@ -34,8 +34,8 @@ GeMS-A10 sampled run across all parts:
 ```bash
 RUSTFLAGS="-C target-cpu=native" cargo run --release -- scan \
   --dataset gems \
-  --row-sample-size 10000 \
-  --reference-sample-size 100000 \
+  --row-sample-size 100000 \
+  --reference-sample-size 1000000 \
   --neighbors 64 \
   --mz-tolerance 0.05 \
   --output-dir results/gems-sampled
