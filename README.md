@@ -21,7 +21,7 @@ Experiment runs:
 Harmonized full run with pathway representative scoring:
 
 ```bash
-cargo run --release -- scan \
+RUSTFLAGS="-C target-cpu=native" cargo run --release -- scan \
   --dataset harmonized \
   --neighbors 64 \
   --mz-tolerance 0.05 \
@@ -32,7 +32,7 @@ cargo run --release -- scan \
 GeMS-A10 sampled run across all parts:
 
 ```bash
-cargo run --release -- scan \
+RUSTFLAGS="-C target-cpu=native" cargo run --release -- scan \
   --dataset gems \
   --row-sample-size 10000 \
   --reference-sample-size 100000 \
