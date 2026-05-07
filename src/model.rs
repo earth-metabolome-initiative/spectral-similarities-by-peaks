@@ -260,7 +260,7 @@ pub struct PathwayPrediction {
 pub struct ScoreDistribution {
     /// Retained peak count.
     pub peak_count: usize,
-    /// Raw similarity scores.
+    /// Similarity scores sorted in ascending order.
     pub scores: Vec<f64>,
     /// Arithmetic mean of the scores.
     pub mean: f64,

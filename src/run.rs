@@ -3,11 +3,12 @@
 use std::fs;
 
 use anyhow::{Context, Result, bail};
+use rayon::prelude::*;
 
 use crate::{
     cli::{Cli, Commands, ScanArgs},
     data::load_records,
-    distribution::{compare_distributions, histogram_distribution, summarize_distribution},
+    distribution::{compare_distributions, histogram_distribution, summarize_sorted_distribution},
     model::{LoadedRecord, ScoreDistribution, SimilarityConfig},
     neighbors::{SearchBatch, compute_neighbors},
     output::OutputWriters,
@@ -142,9 +143,10 @@ fn run_peak_count(
     })
     .with_context(|| format!("computing {config_name} neighbors for top {peak_count} peaks"))?;
 
-    let scores = hits.iter().map(|hit| hit.score).collect::<Vec<_>>();
+    let mut scores = hits.iter().map(|hit| hit.score).collect::<Vec<_>>();
+    scores.sort_by(f64::total_cmp);
 
-    let summary = summarize_distribution(inputs.args, config, peak_count, &scores)?;
+    let summary = summarize_sorted_distribution(inputs.args, config, peak_count, &scores)?;
     let histogram = histogram_distribution(inputs.args, config, peak_count, &scores)?;
     writers.write_histogram(&histogram)?;
 
@@ -181,10 +183,21 @@ fn write_adjacent_comparisons(
         u64::try_from(MAX_PEAK_COUNT.saturating_sub(1)).unwrap_or(u64::MAX),
         format!("comparing adjacent distributions for {config_name}"),
     );
-    for pair in distributions.windows(2) {
-        let comparison = compare_distributions(inputs.args, config, &pair[0], &pair[1])?;
+    let comparisons = (0..distributions.len().saturating_sub(1))
+        .into_par_iter()
+        .map(|index| {
+            let comparison = compare_distributions(
+                inputs.args,
+                config,
+                &distributions[index],
+                &distributions[index + 1],
+            );
+            adjacent_progress.inc(1);
+            comparison
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for comparison in comparisons {
         writers.write_adjacent_comparison(comparison);
-        adjacent_progress.inc(1);
     }
     adjacent_progress.finish();
     writers.flush_adjacent_comparisons()
@@ -202,12 +215,24 @@ fn write_grid_comparisons(
         u64::try_from(MAX_PEAK_COUNT.saturating_mul(MAX_PEAK_COUNT)).unwrap_or(u64::MAX),
         format!("comparing full distribution grid for {config_name}"),
     );
-    for first in distributions {
-        for second in distributions {
-            let comparison = compare_distributions(inputs.args, config, first, second)?;
-            writers.write_grid_comparison(comparison);
+    let width = distributions.len();
+    let comparisons = (0..width.saturating_mul(width))
+        .into_par_iter()
+        .map(|cell| {
+            let row = cell / width;
+            let column = cell % width;
+            let comparison = compare_distributions(
+                inputs.args,
+                config,
+                &distributions[row],
+                &distributions[column],
+            );
             grid_progress.inc(1);
-        }
+            comparison
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for comparison in comparisons {
+        writers.write_grid_comparison(comparison);
     }
     grid_progress.finish();
     writers.flush_grid_comparisons()
