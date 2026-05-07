@@ -67,13 +67,6 @@ fn compute_cosine_neighbors(batch: &SearchBatch<'_>) -> Result<Vec<NeighborHit>>
     ));
     let index = builder.build(batch.spectra)?;
     index_progress.finish();
-    let hit_context = HitContext {
-        args: batch.args,
-        config: batch.config,
-        config_name: &config_name,
-        peak_count: batch.peak_count,
-        records: batch.records,
-    };
     let query_ids = batch
         .query_ids
         .iter()
@@ -89,18 +82,14 @@ fn compute_cosine_neighbors(batch: &SearchBatch<'_>) -> Result<Vec<NeighborHit>>
         .ids(&query_ids)
         .into_par_iter()
         .map(|row| -> Result<Vec<NeighborHit>> {
-            let (query_id, hits) = row.context("computing cosine self-similarity row")?;
-            let query_index =
-                usize::try_from(query_id).context("query index does not fit usize")?;
+            let (_query_id, hits) = row.context("computing cosine self-similarity row")?;
             let hits = hits
                 .into_iter()
-                .enumerate()
-                .map(|(rank, hit)| {
-                    let target_index = usize::try_from(hit.spectrum_id)
-                        .context("target index does not fit usize")?;
-                    neighbor_hit(&hit_context, query_index, target_index, hit, rank + 1)
+                .map(|hit| {
+                    usize::try_from(hit.spectrum_id).context("target index does not fit usize")?;
+                    Ok(NeighborHit { score: hit.score })
                 })
-                .collect();
+                .collect::<Result<Vec<_>>>();
             scoring_progress.inc(1);
             hits
         })
@@ -229,7 +218,7 @@ fn compute_entropy_reference_neighbors(batch: &SearchBatch<'_>) -> Result<Vec<Ne
     )
 }
 
-/// Collect indexed top-k rows into serializable neighbor records.
+/// Collect indexed top-k rows into internal neighbor hits.
 fn collect_indexed_neighbors<F, G>(
     batch: &SearchBatch<'_>,
     new_search_state: G,
@@ -250,14 +239,6 @@ where
         u64::try_from(batch.query_ids.len()).unwrap_or(u64::MAX),
         format!("scoring {config_name} top {} peaks", batch.peak_count),
     );
-    let hit_context = HitContext {
-        args: batch.args,
-        config: batch.config,
-        config_name: &config_name,
-        peak_count: batch.peak_count,
-        records: batch.records,
-    };
-
     let chunks = batch
         .query_ids
         .par_iter()
@@ -273,11 +254,10 @@ where
                     .into_iter()
                     .filter(|hit| usize::try_from(hit.spectrum_id).ok() != Some(query_index))
                     .take(batch.args.neighbors)
-                    .enumerate()
-                    .map(|(rank, hit)| {
-                        let target_index = usize::try_from(hit.spectrum_id)
+                    .map(|hit| {
+                        usize::try_from(hit.spectrum_id)
                             .context("target index does not fit usize")?;
-                        neighbor_hit(&hit_context, query_index, target_index, hit, rank + 1)
+                        Ok(NeighborHit { score: hit.score })
                     })
                     .collect::<Result<Vec<_>>>()?;
                 task.inc(1);
@@ -290,7 +270,7 @@ where
     Ok(chunks.into_iter().flatten().collect())
 }
 
-/// Collect external-query top-k rows into serializable neighbor records.
+/// Collect external-query top-k rows into internal neighbor hits.
 fn collect_external_neighbors<F, G>(
     batch: &SearchBatch<'_>,
     new_search_state: G,
@@ -311,14 +291,6 @@ where
         u64::try_from(batch.query_ids.len()).unwrap_or(u64::MAX),
         format!("scoring {config_name} top {} peaks", batch.peak_count),
     );
-    let hit_context = HitContext {
-        args: batch.args,
-        config: batch.config,
-        config_name: &config_name,
-        peak_count: batch.peak_count,
-        records: batch.records,
-    };
-
     let chunks = batch
         .query_ids
         .par_iter()
@@ -339,11 +311,8 @@ where
                     .into_iter()
                     .filter_map(|hit| reference_hit_target(batch.reference_ids, query_index, hit))
                     .take(batch.args.neighbors)
-                    .enumerate()
-                    .map(|(rank, (target_index, hit))| {
-                        neighbor_hit(&hit_context, query_index, target_index, hit, rank + 1)
-                    })
-                    .collect::<Result<Vec<_>>>()?;
+                    .map(|(_target_index, hit)| NeighborHit { score: hit.score })
+                    .collect::<Vec<_>>();
                 task.inc(1);
                 Ok(hits)
             },
@@ -380,61 +349,6 @@ fn uses_full_reference_panel(reference_ids: &[usize], n_records: usize) -> bool 
             .iter()
             .enumerate()
             .all(|(expected, &actual)| expected == actual)
-}
-
-/// Shared metadata needed while converting raw hits into output rows.
-struct HitContext<'a> {
-    /// Scan arguments that define dataset labels and tolerances.
-    args: &'a ScanArgs,
-    /// Similarity configuration used for this batch.
-    config: &'a SimilarityConfig,
-    /// Precomputed configuration label.
-    config_name: &'a str,
-    /// Retained peak count for this batch.
-    peak_count: usize,
-    /// Loaded records used to resolve row metadata.
-    records: &'a [LoadedRecord],
-}
-
-/// Convert one raw index hit into a stored output row.
-fn neighbor_hit(
-    context: &HitContext<'_>,
-    query_index: usize,
-    target_index: usize,
-    hit: FlashSearchResult,
-    rank: usize,
-) -> Result<NeighborHit> {
-    let query = context
-        .records
-        .get(query_index)
-        .with_context(|| format!("query index {query_index} is out of bounds"))?;
-    let target = context
-        .records
-        .get(target_index)
-        .with_context(|| format!("target index {target_index} is out of bounds"))?;
-
-    Ok(NeighborHit {
-        dataset: context.args.dataset.as_str().to_string(),
-        config: context.config_name.to_string(),
-        metric: context.config.metric_label(),
-        mz_power: context.config.mz_power,
-        intensity_power: context.config.intensity_power,
-        entropy_weighted: context.config.entropy_weighted,
-        mz_tolerance: context.args.mz_tolerance,
-        pepmass_tolerance: context.args.pepmass_tolerance,
-        peak_count: context.peak_count,
-        query_index,
-        target_index,
-        rank,
-        score: hit.score,
-        n_matches: hit.n_matches,
-        query_id: query.id.clone(),
-        target_id: target.id.clone(),
-        query_name: query.name.clone(),
-        target_name: target.name.clone(),
-        query_npc_pathway: query.npc_pathway.clone(),
-        target_npc_pathway: target.npc_pathway.clone(),
-    })
 }
 
 #[cfg(test)]
@@ -500,7 +414,6 @@ mod tests {
                 reference_ids: &reference_ids,
             })?;
             assert_eq!(hits.len(), records.len());
-            assert!(hits.iter().all(|hit| hit.query_index != hit.target_index));
             assert!(hits.iter().all(|hit| hit.score > 0.0));
         }
 
@@ -515,7 +428,6 @@ mod tests {
         }
         Ok(LoadedRecord {
             id: id.to_string(),
-            name: None,
             npc_pathway: Some("Synthetic".to_string()),
             spectrum,
         })

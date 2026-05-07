@@ -58,7 +58,10 @@ fn full_scan_smoke_test_produces_expected_artifacts() -> Result<(), Box<dyn Erro
     ])?;
     run::run(cli)?;
 
-    assert_parquet_rows(&output_dir.join("similarities.parquet"), 13_824)?;
+    assert!(
+        !output_dir.join("similarities.parquet").exists(),
+        "raw similarity hits should not be persisted"
+    );
     assert_parquet_rows(&output_dir.join("distribution_summary.parquet"), 384)?;
     assert_parquet_rows(&output_dir.join("distribution_histograms.parquet"), 1_920)?;
     assert_parquet_rows(&output_dir.join("distribution_tests.parquet"), 381)?;

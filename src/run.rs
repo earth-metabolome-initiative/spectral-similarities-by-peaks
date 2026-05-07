@@ -143,7 +143,6 @@ fn run_peak_count(
     .with_context(|| format!("computing {config_name} neighbors for top {peak_count} peaks"))?;
 
     let scores = hits.iter().map(|hit| hit.score).collect::<Vec<_>>();
-    writers.write_neighbors(&hits)?;
 
     let summary = summarize_distribution(inputs.args, config, peak_count, &scores)?;
     let histogram = histogram_distribution(inputs.args, config, peak_count, &scores)?;

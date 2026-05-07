@@ -51,7 +51,6 @@ This runs a deterministic end-to-end synthetic scan by parsing the CLI in-proces
 
 Outputs:
 
-- `similarities.parquet`: one row per query, retained peak count, similarity config, and retained neighbor. Use `rank == 1` for best-neighbor-only distributions; use all ranks for the full retained-neighbor distribution.
 - `distribution_summary.parquet`: mean, standard deviation, and quantiles for each score distribution.
 - `distribution_histograms.parquet`: fixed-width histogram bins over the `[0, 1]` score range for every distribution.
 - `distribution_tests.parquet`: adjacent peak-count comparisons using two-sample KS statistic, asymptotic KS p-value, and 1D Wasserstein distance.

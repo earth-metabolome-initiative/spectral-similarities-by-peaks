@@ -336,7 +336,6 @@ mod tests {
     fn labeled_record(id: &str, npc_pathway: Option<&str>) -> Result<LoadedRecord> {
         Ok(LoadedRecord {
             id: id.to_string(),
-            name: None,
             npc_pathway: npc_pathway.map(ToOwned::to_owned),
             spectrum: GenericSpectrum::try_with_capacity(100.0, 0)?,
         })

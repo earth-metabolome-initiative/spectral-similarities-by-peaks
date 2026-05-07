@@ -99,57 +99,17 @@ impl fmt::Display for SimilarityConfig {
 pub struct LoadedRecord {
     /// Stable record identifier, falling back to row index when necessary.
     pub id: String,
-    /// Optional human-readable spectrum name.
-    pub name: Option<String>,
     /// Optional raw `NPC` pathway label field.
     pub npc_pathway: Option<String>,
     /// Spectrum used for peak selection and similarity indexing.
     pub spectrum: GenericSpectrum,
 }
 
-#[derive(Debug, Serialize)]
-/// One retained neighbor hit written to `similarities.parquet`.
+#[derive(Debug)]
+/// One retained neighbor hit used to build score distributions.
 pub struct NeighborHit {
-    /// Dataset label.
-    pub dataset: String,
-    /// Similarity configuration label.
-    pub config: String,
-    /// Similarity family label.
-    pub metric: &'static str,
-    /// Exponent applied to peak m/z values.
-    pub mz_power: f64,
-    /// Exponent applied to peak intensities.
-    pub intensity_power: f64,
-    /// Whether entropy scoring used weighted entropy.
-    pub entropy_weighted: bool,
-    /// Product m/z tolerance in Da.
-    pub mz_tolerance: f64,
-    /// Optional precursor m/z tolerance in Da.
-    pub pepmass_tolerance: Option<f64>,
-    /// Retained peak count for this run.
-    pub peak_count: usize,
-    /// Zero-based query row index in the loaded dataset.
-    pub query_index: usize,
-    /// Zero-based target row index in the loaded dataset.
-    pub target_index: usize,
-    /// One-based neighbor rank for the query.
-    pub rank: usize,
     /// Similarity score.
     pub score: f64,
-    /// Number of matched peaks reported by the index.
-    pub n_matches: usize,
-    /// Query record identifier.
-    pub query_id: String,
-    /// Target record identifier.
-    pub target_id: String,
-    /// Query spectrum name, if available.
-    pub query_name: Option<String>,
-    /// Target spectrum name, if available.
-    pub target_name: Option<String>,
-    /// Query raw `NPC` pathway label field, if available.
-    pub query_npc_pathway: Option<String>,
-    /// Target raw `NPC` pathway label field, if available.
-    pub target_npc_pathway: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

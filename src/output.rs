@@ -14,8 +14,8 @@ use ndarray_npy::NpzWriter;
 use parquet::arrow::ArrowWriter;
 
 use crate::model::{
-    DistributionComparison, DistributionHistogramBin, DistributionSummary, NeighborHit,
-    PathwayPrediction, PathwayScore,
+    DistributionComparison, DistributionHistogramBin, DistributionSummary, PathwayPrediction,
+    PathwayScore,
 };
 use crate::progress::ScanProgress;
 use crate::visualize::write_heatmaps;
@@ -27,8 +27,6 @@ const GRID_SIZE: usize = 128;
 pub struct OutputWriters {
     /// Output directory used for late-written dense matrix artifacts.
     output_dir: PathBuf,
-    /// Raw top-neighbor output writer.
-    similarity: ParquetTableWriter,
     /// Distribution summary output writer.
     summary: ParquetTableWriter,
     /// Histogram output writer.
@@ -54,11 +52,6 @@ impl OutputWriters {
     pub fn create(output_dir: &Path) -> Result<Self> {
         Ok(Self {
             output_dir: output_dir.to_path_buf(),
-            similarity: ParquetTableWriter::create(
-                output_dir,
-                "similarities.parquet",
-                neighbor_schema(),
-            )?,
             summary: ParquetTableWriter::create(
                 output_dir,
                 "distribution_summary.parquet",
@@ -93,11 +86,6 @@ impl OutputWriters {
             pending_grid_comparisons: Vec::new(),
             grid_matrices: GridMatrixBuffer::default(),
         })
-    }
-
-    /// Write raw neighbor rows.
-    pub fn write_neighbors(&mut self, hits: &[NeighborHit]) -> Result<()> {
-        self.similarity.write(&neighbor_batch(hits)?)
     }
 
     /// Write one distribution summary row.
@@ -162,7 +150,6 @@ impl OutputWriters {
         self.grid_matrices.write(&self.output_dir, progress)?;
 
         let close_progress = progress.spinner("closing Parquet writers");
-        self.similarity.close()?;
         self.summary.close()?;
         self.histogram.close()?;
         self.adjacent_comparison.close()?;
@@ -386,77 +373,6 @@ struct GridConfigRow {
     metric: String,
 }
 
-/// Build a Parquet batch for raw neighbor hits.
-fn neighbor_batch(rows: &[NeighborHit]) -> Result<RecordBatch> {
-    let columns = vec![
-        strings(
-            rows.iter()
-                .map(|row| row.dataset.as_str())
-                .collect::<Vec<_>>(),
-        ),
-        strings(
-            rows.iter()
-                .map(|row| row.config.as_str())
-                .collect::<Vec<_>>(),
-        ),
-        strings(rows.iter().map(|row| row.metric).collect::<Vec<_>>()),
-        floats(rows.iter().map(|row| row.mz_power).collect::<Vec<_>>()),
-        floats(
-            rows.iter()
-                .map(|row| row.intensity_power)
-                .collect::<Vec<_>>(),
-        ),
-        booleans(
-            rows.iter()
-                .map(|row| row.entropy_weighted)
-                .collect::<Vec<_>>(),
-        ),
-        floats(rows.iter().map(|row| row.mz_tolerance).collect::<Vec<_>>()),
-        optional_floats(
-            rows.iter()
-                .map(|row| row.pepmass_tolerance)
-                .collect::<Vec<_>>(),
-        ),
-        usizes(rows.iter().map(|row| row.peak_count).collect::<Vec<_>>())?,
-        usizes(rows.iter().map(|row| row.query_index).collect::<Vec<_>>())?,
-        usizes(rows.iter().map(|row| row.target_index).collect::<Vec<_>>())?,
-        usizes(rows.iter().map(|row| row.rank).collect::<Vec<_>>())?,
-        floats(rows.iter().map(|row| row.score).collect::<Vec<_>>()),
-        usizes(rows.iter().map(|row| row.n_matches).collect::<Vec<_>>())?,
-        strings(
-            rows.iter()
-                .map(|row| row.query_id.as_str())
-                .collect::<Vec<_>>(),
-        ),
-        strings(
-            rows.iter()
-                .map(|row| row.target_id.as_str())
-                .collect::<Vec<_>>(),
-        ),
-        optional_strings(
-            rows.iter()
-                .map(|row| row.query_name.as_deref())
-                .collect::<Vec<_>>(),
-        ),
-        optional_strings(
-            rows.iter()
-                .map(|row| row.target_name.as_deref())
-                .collect::<Vec<_>>(),
-        ),
-        optional_strings(
-            rows.iter()
-                .map(|row| row.query_npc_pathway.as_deref())
-                .collect::<Vec<_>>(),
-        ),
-        optional_strings(
-            rows.iter()
-                .map(|row| row.target_npc_pathway.as_deref())
-                .collect::<Vec<_>>(),
-        ),
-    ];
-    record_batch(neighbor_schema(), columns, "neighbor hits")
-}
-
 /// Build a Parquet batch for distribution summaries.
 fn distribution_summary_batch(rows: &[DistributionSummary]) -> Result<RecordBatch> {
     let columns = vec![
@@ -666,32 +582,6 @@ fn record_batch(schema: SchemaRef, columns: Vec<ArrayRef>, label: &str) -> Resul
     RecordBatch::try_new(schema, columns).with_context(|| format!("building {label} batch"))
 }
 
-/// Return the raw neighbor output schema.
-fn neighbor_schema() -> SchemaRef {
-    schema(vec![
-        utf8("dataset", false),
-        utf8("config", false),
-        utf8("metric", false),
-        f64_field("mz_power", false),
-        f64_field("intensity_power", false),
-        bool_field("entropy_weighted", false),
-        f64_field("mz_tolerance", false),
-        f64_field("pepmass_tolerance", true),
-        u64_field("peak_count", false),
-        u64_field("query_index", false),
-        u64_field("target_index", false),
-        u64_field("rank", false),
-        f64_field("score", false),
-        u64_field("n_matches", false),
-        utf8("query_id", false),
-        utf8("target_id", false),
-        utf8("query_name", true),
-        utf8("target_name", true),
-        utf8("query_npc_pathway", true),
-        utf8("target_npc_pathway", true),
-    ])
-}
-
 /// Return the distribution summary output schema.
 fn distribution_summary_schema() -> SchemaRef {
     schema(vec![
@@ -828,16 +718,6 @@ fn optional_strings(values: Vec<Option<&str>>) -> ArrayRef {
 /// Build a required `f64` array.
 fn floats(values: Vec<f64>) -> ArrayRef {
     Arc::new(Float64Array::from(values))
-}
-
-/// Build a nullable `f64` array.
-fn optional_floats(values: Vec<Option<f64>>) -> ArrayRef {
-    Arc::new(Float64Array::from(values))
-}
-
-/// Build a required boolean array.
-fn booleans(values: Vec<bool>) -> ArrayRef {
-    Arc::new(BooleanArray::from(values))
 }
 
 /// Build a nullable boolean array.

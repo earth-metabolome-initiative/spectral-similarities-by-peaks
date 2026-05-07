@@ -65,9 +65,6 @@ fn record_from_mgf(index: usize, record: &MascotGenericFormat<f64>) -> LoadedRec
         .feature_id()
         .or_else(|| metadata.splash())
         .map_or_else(|| index.to_string(), ToOwned::to_owned);
-    let name = metadata
-        .arbitrary_metadata_value("NAME")
-        .map(ToOwned::to_owned);
     let npc_pathway = metadata
         .arbitrary_metadata_value("NPC_PATHWAY")
         .map(ToOwned::to_owned);
@@ -75,7 +72,6 @@ fn record_from_mgf(index: usize, record: &MascotGenericFormat<f64>) -> LoadedRec
 
     LoadedRecord {
         id,
-        name,
         npc_pathway,
         spectrum,
     }
@@ -102,7 +98,6 @@ fn synthetic_smoke_records() -> Result<Vec<LoadedRecord>> {
 
             Ok(LoadedRecord {
                 id: format!("synthetic-{index:02}"),
-                name: Some(format!("synthetic spectrum {index:02}")),
                 npc_pathway: Some(format!("pathway-{cluster}")),
                 spectrum,
             })
