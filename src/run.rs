@@ -8,7 +8,9 @@ use rayon::prelude::*;
 use crate::{
     cli::{Cli, Commands, ScanArgs},
     data::load_records,
-    distribution::{compare_distributions, histogram_distribution, summarize_sorted_distribution},
+    distribution::{
+        compare_distributions, histogram_sorted_distribution, summarize_sorted_distribution,
+    },
     model::{LoadedRecord, ScoreDistribution, SimilarityConfig},
     neighbors::{SearchBatch, compute_neighbors},
     output::OutputWriters,
@@ -143,11 +145,11 @@ fn run_peak_count(
     })
     .with_context(|| format!("computing {config_name} neighbors for top {peak_count} peaks"))?;
 
-    let mut scores = hits.iter().map(|hit| hit.score).collect::<Vec<_>>();
-    scores.sort_by(f64::total_cmp);
+    let mut scores = hits.into_iter().map(|hit| hit.score).collect::<Vec<_>>();
+    scores.par_sort_by(f64::total_cmp);
 
     let summary = summarize_sorted_distribution(inputs.args, config, peak_count, &scores)?;
-    let histogram = histogram_distribution(inputs.args, config, peak_count, &scores)?;
+    let histogram = histogram_sorted_distribution(inputs.args, config, peak_count, &scores)?;
     writers.write_histogram(&histogram)?;
 
     if let Some((pathway_scores, pathway_predictions)) = score_pathway_representatives(

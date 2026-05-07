@@ -95,28 +95,21 @@ pub fn compare_distributions(
     })
 }
 
-/// Build fixed-width histogram bins over the `[0, 1]` similarity range.
-pub fn histogram_distribution(
+/// Build fixed-width histogram bins over the `[0, 1]` similarity range from sorted scores.
+pub fn histogram_sorted_distribution(
     args: &ScanArgs,
     config: &SimilarityConfig,
     peak_count: usize,
-    scores: &[f64],
+    sorted: &[f64],
 ) -> Result<Vec<DistributionHistogramBin>> {
-    if scores.is_empty() {
+    if sorted.is_empty() {
         bail!("cannot histogram an empty score distribution");
     }
+    debug_assert!(is_sorted(sorted));
     let bin_width = 1.0 / args.histogram_bins as f64;
-    let mut counts = vec![0_usize; args.histogram_bins];
-    for &score in scores {
-        let clamped = score.clamp(0.0, 1.0);
-        let mut bin_index = (clamped / bin_width).floor() as usize;
-        if bin_index >= args.histogram_bins {
-            bin_index = args.histogram_bins - 1;
-        }
-        counts[bin_index] += 1;
-    }
+    let counts = histogram_counts_sorted(sorted, args.histogram_bins, bin_width);
 
-    let n_scores = scores.len() as f64;
+    let n_scores = sorted.len() as f64;
     Ok(counts
         .into_iter()
         .enumerate()
@@ -135,6 +128,26 @@ pub fn histogram_distribution(
             }
         })
         .collect())
+}
+
+/// Count fixed-width histogram bins from sorted finite scores.
+fn histogram_counts_sorted(sorted: &[f64], bins: usize, bin_width: f64) -> Vec<usize> {
+    debug_assert!(!sorted.is_empty());
+    debug_assert!(bins > 0);
+    debug_assert!(is_sorted(sorted));
+
+    let mut counts = vec![0_usize; bins];
+    let mut cursor = 0;
+    for (bin_index, count) in counts.iter_mut().enumerate().take(bins - 1) {
+        let upper = (bin_index + 1) as f64 * bin_width;
+        let start = cursor;
+        while cursor < sorted.len() && sorted[cursor] < upper {
+            cursor += 1;
+        }
+        *count = cursor - start;
+    }
+    counts[bins - 1] = sorted.len() - cursor;
+    counts
 }
 
 /// Return a linearly interpolated quantile from an ascending sorted sample.
@@ -259,7 +272,14 @@ fn wasserstein_1d_sorted(left: &[f64], right: &[f64]) -> f64 {
 #[cfg(test)]
 /// Unit tests for distribution statistics.
 mod tests {
-    use super::{ks_two_sample_statistic_sorted, wasserstein_1d_sorted};
+    use super::{histogram_counts_sorted, ks_two_sample_statistic_sorted, wasserstein_1d_sorted};
+
+    #[test]
+    /// Sorted histogram counts preserve fixed-width bin and clamping semantics.
+    fn sorted_histogram_counts_match_fixed_width_bins() {
+        let scores = [-0.5, 0.0, 0.249, 0.25, 0.5, 0.75, 1.0, 1.5];
+        assert_eq!(histogram_counts_sorted(&scores, 4, 0.25), vec![3, 1, 1, 3]);
+    }
 
     #[test]
     /// Identical samples have a zero `KS` statistic.
