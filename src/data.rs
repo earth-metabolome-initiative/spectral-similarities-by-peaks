@@ -19,14 +19,15 @@ pub fn load_records(args: &ScanArgs) -> Result<Vec<LoadedRecord>> {
     match args.dataset {
         DatasetName::Harmonized => {
             let target_directory = args.data_dir.join("harmonized-top-128");
-            let load = pollster::block_on(Dataset::load(
-                MGFVec::<f64>::annotated_ms2_top_128_peaks()
-                    .target_directory(&target_directory)
-                    .verbose(),
-            ))
-            .with_context(|| {
-                format!("loading harmonized data in {}", target_directory.display())
-            })?;
+            let load = tokio_runtime()?
+                .block_on(Dataset::load(
+                    MGFVec::<f64>::annotated_ms2_top_128_peaks()
+                        .target_directory(&target_directory)
+                        .verbose(),
+                ))
+                .with_context(|| {
+                    format!("loading harmonized data in {}", target_directory.display())
+                })?;
             Ok(records_from_mgf(load.spectra()))
         }
         DatasetName::Gems => {
@@ -40,13 +41,23 @@ pub fn load_records(args: &ScanArgs) -> Result<Vec<LoadedRecord>> {
                     .parts(parts.iter().copied())
                     .context("selecting GeMS-A10 parts")?;
             }
-            let load = pollster::block_on(Dataset::load(builder)).with_context(|| {
-                format!("loading GeMS-A10 data in {}", target_directory.display())
-            })?;
+            let load = tokio_runtime()?
+                .block_on(Dataset::load(builder))
+                .with_context(|| {
+                    format!("loading GeMS-A10 data in {}", target_directory.display())
+                })?;
             Ok(records_from_mgf(load.spectra()))
         }
         DatasetName::SyntheticSmoke => synthetic_smoke_records(),
     }
+}
+
+/// Build the `Tokio` runtime required by the async download stack.
+fn tokio_runtime() -> Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("creating Tokio runtime for dataset loading")
 }
 
 /// Convert a parsed `MGF` collection into experiment records.

@@ -21,11 +21,11 @@ ndarray = "0.16"
 ndarray-npy = "0.9"
 parquet = { version = "56", features = ["arrow"] }
 plotters = { version = "0.3", default-features = false, features = ["ab_glyph", "bitmap_backend", "bitmap_encoder", "svg_backend"] }
-pollster = "0.4"
 rand = "0.9"
 rand_chacha = "0.9"
 rayon = "1.11"
 serde = { version = "1", features = ["derive"] }
+tokio = { version = "1.52", features = ["rt-multi-thread"] }
 
 [lints.rust]
 missing_docs = "deny"
