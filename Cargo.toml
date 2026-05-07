@@ -2,7 +2,7 @@
 name = "spectral-similarities-by-peaks"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.86"
 license = "MIT"
 description = "Experiments on how MS2 spectral similarity distributions change with retained peaks."
 readme = "README.md"

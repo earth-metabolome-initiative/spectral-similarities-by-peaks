@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/earth-metabolome-initiative/spectral-similarities-by-peaks/actions/workflows/ci.yml/badge.svg)](https://github.com/earth-metabolome-initiative/spectral-similarities-by-peaks/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/earth-metabolome-initiative/spectral-similarities-by-peaks/branch/main/graph/badge.svg)](https://codecov.io/gh/earth-metabolome-initiative/spectral-similarities-by-peaks)
-[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust 1.86+](https://img.shields.io/badge/rust-1.86%2B-orange.svg)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Experiment on measuring when MS2 spectral similarity distributions stop changing as fewer or more fragment peaks are retained.
