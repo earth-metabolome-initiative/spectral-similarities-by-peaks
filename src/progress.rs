@@ -25,9 +25,10 @@ impl ScanProgress {
         let message = message.into();
         if let Some(multi) = &self.multi {
             let progress = multi.add(ProgressBar::new(len));
-            if let Ok(style) =
-                ProgressStyle::with_template("{msg} [{elapsed_precise}] {wide_bar} {pos}/{len}")
-            {
+            if let Ok(style) = ProgressStyle::with_template(
+                "{msg} [{elapsed_precise} elapsed, {eta_precise} eta] \
+                 {wide_bar} {pos}/{len} ({per_sec})",
+            ) {
                 progress.set_style(style);
             }
             progress.set_message(message);
