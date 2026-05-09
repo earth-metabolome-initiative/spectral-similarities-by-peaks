@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result};
 use mass_spectrometry::prelude::{
-    FlashCosineThresholdIndex, GenericSpectrum, SearchState, SpectraIndexBuilder,
+    FlashCosineThresholdIndex, GenericSpectrum, SearchState, SpectraIndexBuilder, TopKSearchState,
 };
 use rayon::prelude::*;
 
@@ -24,7 +24,7 @@ pub fn score_pathway_representatives(
     spectra: &[GenericSpectrum],
     query_ids: &[usize],
 ) -> Result<Option<(Vec<PathwayScore>, Vec<PathwayPrediction>)>> {
-    if config.metric != Metric::Cosine || args.pathway_representatives_per_class == 0 {
+    if !config.metric.is_cosine_family() || args.pathway_representatives_per_class == 0 {
         return Ok(None);
     }
 
@@ -62,8 +62,8 @@ pub fn score_pathway_representatives(
     let rows = query_ids
         .par_iter()
         .map_init(
-            || index.new_search_state(),
-            |state, &query_index| {
+            || (index.new_search_state(), TopKSearchState::new()),
+            |(state, top_k_state), &query_index| {
                 let rows = score_query_pathways(
                     args,
                     config,
@@ -76,6 +76,7 @@ pub fn score_pathway_representatives(
                     &pathways,
                     &index,
                     state,
+                    top_k_state,
                 );
                 task.inc(1);
                 rows
@@ -158,6 +159,7 @@ fn score_query_pathways(
     pathways: &BTreeMap<String, usize>,
     index: &FlashCosineThresholdIndex<f64>,
     state: &mut SearchState,
+    top_k_state: &mut TopKSearchState,
 ) -> Result<(Vec<PathwayScore>, PathwayPrediction)> {
     let query = records
         .get(query_index)
@@ -175,8 +177,24 @@ fn score_query_pathways(
         })
         .collect::<BTreeMap<_, _>>();
 
-    let hits =
-        index.search_top_k_with_state(&spectra[query_index], representatives.len(), state)?;
+    let mut hits = Vec::with_capacity(representatives.len());
+    if config.metric == Metric::ModifiedCosine {
+        index.for_each_modified_top_k_with_state(
+            &spectra[query_index],
+            representatives.len(),
+            state,
+            top_k_state,
+            |hit| hits.push(hit),
+        )?;
+    } else {
+        index.for_each_top_k_with_state(
+            &spectra[query_index],
+            representatives.len(),
+            state,
+            top_k_state,
+            |hit| hits.push(hit),
+        )?;
+    }
     for hit in hits {
         let representative_index =
             usize::try_from(hit.spectrum_id).context("representative index does not fit usize")?;

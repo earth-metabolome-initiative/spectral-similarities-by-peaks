@@ -38,7 +38,9 @@ pub struct SearchBatch<'a> {
 pub fn compute_neighbors(batch: &SearchBatch<'_>) -> Result<Vec<NeighborHit>> {
     match batch.config.metric {
         Metric::Cosine => compute_cosine_neighbors(batch),
+        Metric::ModifiedCosine => compute_modified_cosine_neighbors(batch),
         Metric::Entropy => compute_entropy_neighbors(batch),
+        Metric::ModifiedEntropy => compute_modified_entropy_neighbors(batch),
     }
 }
 
@@ -102,6 +104,14 @@ fn compute_cosine_neighbors(batch: &SearchBatch<'_>) -> Result<Vec<NeighborHit>>
 /// Compute cosine neighbors against a fixed sampled reference panel.
 fn compute_cosine_reference_neighbors(batch: &SearchBatch<'_>) -> Result<Vec<NeighborHit>> {
     let reference_spectra = reference_spectra(batch.spectra, batch.reference_ids);
+    compute_cosine_neighbors_against_references(batch, &reference_spectra)
+}
+
+/// Compute cosine neighbors against already selected reference spectra.
+fn compute_cosine_neighbors_against_references(
+    batch: &SearchBatch<'_>,
+    reference_spectra: &[GenericSpectrum],
+) -> Result<Vec<NeighborHit>> {
     let mut builder = FlashCosineThresholdIndex::<f64>::builder()
         .mz_power(batch.config.mz_power)
         .intensity_power(batch.config.intensity_power)
@@ -116,13 +126,58 @@ fn compute_cosine_reference_neighbors(batch: &SearchBatch<'_>) -> Result<Vec<Nei
         "building {config_name} reference index for top {} peaks",
         batch.peak_count
     ));
-    let index = builder.build(&reference_spectra)?;
+    let index = builder.build(reference_spectra)?;
     index_progress.finish();
     collect_external_neighbors(
         batch,
         || index.new_search_state(),
         |query, state, top_k_state, emit| {
             index.for_each_top_k_with_state(
+                query,
+                batch.args.neighbors + 1,
+                state,
+                top_k_state,
+                emit,
+            )
+        },
+    )
+}
+
+/// Compute modified-cosine neighbors with the modified top-k index path.
+fn compute_modified_cosine_neighbors(batch: &SearchBatch<'_>) -> Result<Vec<NeighborHit>> {
+    if uses_full_reference_panel(batch.reference_ids, batch.records.len()) {
+        return compute_modified_cosine_neighbors_against_references(batch, batch.spectra);
+    }
+    let reference_spectra = reference_spectra(batch.spectra, batch.reference_ids);
+    compute_modified_cosine_neighbors_against_references(batch, &reference_spectra)
+}
+
+/// Compute modified-cosine neighbors against already selected reference spectra.
+fn compute_modified_cosine_neighbors_against_references(
+    batch: &SearchBatch<'_>,
+    reference_spectra: &[GenericSpectrum],
+) -> Result<Vec<NeighborHit>> {
+    let mut builder = FlashCosineThresholdIndex::<f64>::builder()
+        .mz_power(batch.config.mz_power)
+        .intensity_power(batch.config.intensity_power)
+        .mz_tolerance(batch.args.mz_tolerance)
+        .score_threshold(batch.args.score_threshold)
+        .parallel();
+    if let Some(pepmass_tolerance) = batch.args.pepmass_tolerance {
+        builder = builder.pepmass_tolerance(pepmass_tolerance)?;
+    }
+    let config_name = batch.config.name();
+    let index_progress = batch.progress.spinner(format!(
+        "building {config_name} reference index for top {} peaks",
+        batch.peak_count
+    ));
+    let index = builder.build(reference_spectra)?;
+    index_progress.finish();
+    collect_external_neighbors(
+        batch,
+        || index.new_search_state(),
+        |query, state, top_k_state, emit| {
+            index.for_each_modified_top_k_with_state(
                 query,
                 batch.args.neighbors + 1,
                 state,
@@ -186,6 +241,14 @@ fn compute_entropy_neighbors(batch: &SearchBatch<'_>) -> Result<Vec<NeighborHit>
 /// Compute entropy neighbors against a fixed sampled reference panel.
 fn compute_entropy_reference_neighbors(batch: &SearchBatch<'_>) -> Result<Vec<NeighborHit>> {
     let reference_spectra = reference_spectra(batch.spectra, batch.reference_ids);
+    compute_entropy_neighbors_against_references(batch, &reference_spectra)
+}
+
+/// Compute entropy neighbors against already selected reference spectra.
+fn compute_entropy_neighbors_against_references(
+    batch: &SearchBatch<'_>,
+    reference_spectra: &[GenericSpectrum],
+) -> Result<Vec<NeighborHit>> {
     let mut builder = FlashEntropyIndex::<f64>::builder()
         .mz_power(batch.config.mz_power)
         .intensity_power(batch.config.intensity_power)
@@ -200,7 +263,7 @@ fn compute_entropy_reference_neighbors(batch: &SearchBatch<'_>) -> Result<Vec<Ne
         "building {config_name} reference index for top {} peaks",
         batch.peak_count
     ));
-    let index = builder.build(&reference_spectra)?;
+    let index = builder.build(reference_spectra)?;
     index_progress.finish();
     collect_external_neighbors(
         batch,
@@ -210,6 +273,51 @@ fn compute_entropy_reference_neighbors(batch: &SearchBatch<'_>) -> Result<Vec<Ne
                 query,
                 batch.args.neighbors + 1,
                 batch.args.score_threshold,
+                state,
+                top_k_state,
+                emit,
+            )
+        },
+    )
+}
+
+/// Compute modified-entropy neighbors with the modified top-k index path.
+fn compute_modified_entropy_neighbors(batch: &SearchBatch<'_>) -> Result<Vec<NeighborHit>> {
+    if uses_full_reference_panel(batch.reference_ids, batch.records.len()) {
+        return compute_modified_entropy_neighbors_against_references(batch, batch.spectra);
+    }
+    let reference_spectra = reference_spectra(batch.spectra, batch.reference_ids);
+    compute_modified_entropy_neighbors_against_references(batch, &reference_spectra)
+}
+
+/// Compute modified-entropy neighbors against already selected reference spectra.
+fn compute_modified_entropy_neighbors_against_references(
+    batch: &SearchBatch<'_>,
+    reference_spectra: &[GenericSpectrum],
+) -> Result<Vec<NeighborHit>> {
+    let mut builder = FlashEntropyIndex::<f64>::builder()
+        .mz_power(batch.config.mz_power)
+        .intensity_power(batch.config.intensity_power)
+        .mz_tolerance(batch.args.mz_tolerance)
+        .weighted(batch.config.entropy_weighted)
+        .parallel();
+    if let Some(pepmass_tolerance) = batch.args.pepmass_tolerance {
+        builder = builder.pepmass_tolerance(pepmass_tolerance)?;
+    }
+    let config_name = batch.config.name();
+    let index_progress = batch.progress.spinner(format!(
+        "building {config_name} reference index for top {} peaks",
+        batch.peak_count
+    ));
+    let index = builder.build(reference_spectra)?;
+    index_progress.finish();
+    collect_external_neighbors(
+        batch,
+        || index.new_search_state(),
+        |query, state, top_k_state, emit| {
+            index.for_each_modified_top_k_with_state(
+                query,
+                batch.args.neighbors + 1,
                 state,
                 top_k_state,
                 emit,
@@ -253,6 +361,7 @@ where
                 let hits = raw_hits
                     .into_iter()
                     .filter(|hit| usize::try_from(hit.spectrum_id).ok() != Some(query_index))
+                    .filter(|hit| hit.score >= batch.args.score_threshold)
                     .take(batch.args.neighbors)
                     .map(|hit| {
                         usize::try_from(hit.spectrum_id)
@@ -310,6 +419,7 @@ where
                 let hits = raw_hits
                     .into_iter()
                     .filter_map(|hit| reference_hit_target(batch.reference_ids, query_index, hit))
+                    .filter(|(_target_index, hit)| hit.score >= batch.args.score_threshold)
                     .take(batch.args.neighbors)
                     .map(|(_target_index, hit)| NeighborHit { score: hit.score })
                     .collect::<Vec<_>>();
@@ -401,7 +511,11 @@ mod tests {
 
         for config in [
             SimilarityConfig::from_str("cosine:0.0:1.0")?,
+            SimilarityConfig::from_str("modified-cosine:0.0:1.0")?,
             SimilarityConfig::from_str("entropy:0.0:1.0:true")?,
+            SimilarityConfig::from_str("modified-entropy:0.0:1.0:true")?,
+            SimilarityConfig::from_str("entropy:0.0:1.0:false")?,
+            SimilarityConfig::from_str("modified-entropy:0.0:1.0:false")?,
         ] {
             let hits = compute_neighbors(&SearchBatch {
                 args: &args,

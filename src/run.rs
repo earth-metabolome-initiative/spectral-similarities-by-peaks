@@ -12,7 +12,7 @@ use crate::{
     distribution::{
         compare_distributions, histogram_sorted_distribution, summarize_sorted_distribution,
     },
-    model::{LoadedRecord, Metric, ScoreDistribution, SimilarityConfig},
+    model::{LoadedRecord, ScoreDistribution, SimilarityConfig},
     neighbors::{SearchBatch, compute_neighbors},
     output::OutputWriters,
     pathway::score_pathway_representatives,
@@ -231,7 +231,7 @@ fn write_cached_distribution_outputs(
         histogram_sorted_distribution(inputs.args, config, peak_count, &distribution.scores)?;
     writers.write_histogram(&histogram)?;
 
-    if inputs.args.pathway_representatives_per_class > 0 && config.metric == Metric::Cosine {
+    if inputs.args.pathway_representatives_per_class > 0 && config.metric.is_cosine_family() {
         let spectra = prepare_spectra(
             inputs.progress,
             inputs.records,

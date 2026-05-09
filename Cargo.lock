@@ -1377,7 +1377,7 @@ dependencies = [
 [[package]]
 name = "mass_spectrometry"
 version = "0.1.0"
-source = "git+https://github.com/earth-metabolome-initiative/mass-spectrometry-traits#a4e181ca8925cf8c50fcd1a1a0f1698a3fb1d086"
+source = "git+https://github.com/earth-metabolome-initiative/mass-spectrometry-traits#064985366c24902dae986f66e4bbc3a796555ac5"
 dependencies = [
  "arbitrary",
  "geometric-traits 0.1.0 (git+https://github.com/earth-metabolome-initiative/geometric-traits)",

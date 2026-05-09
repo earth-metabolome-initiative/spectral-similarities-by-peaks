@@ -44,6 +44,10 @@ pub struct ScanArgs {
     #[arg(long, default_value = "results")]
     pub output_dir: PathBuf,
     /// Similarity config as `metric:mz_power:intensity_power[:weighted]`.
+    ///
+    /// Metrics are `cosine`, `modified-cosine`, `entropy`, and
+    /// `modified-entropy`. The weighted flag is accepted only for entropy
+    /// metrics.
     #[arg(long = "similarity-config", default_values = DEFAULT_SIMILARITY_CONFIGS)]
     pub similarity_configs: Vec<SimilarityConfig>,
     /// Product m/z tolerance in Da.
@@ -139,7 +143,9 @@ impl FromStr for SimilarityConfig {
 
         let metric = match parts[0] {
             "cosine" => Metric::Cosine,
+            "modified-cosine" | "modified_cosine" => Metric::ModifiedCosine,
             "entropy" => Metric::Entropy,
+            "modified-entropy" | "modified_entropy" => Metric::ModifiedEntropy,
             other => bail!("unknown similarity metric {other}"),
         };
         let mz_power = parts[1]
@@ -155,8 +161,8 @@ impl FromStr for SimilarityConfig {
             .with_context(|| format!("invalid entropy weighted flag in {value}"))?
             .unwrap_or(true);
 
-        if metric == Metric::Cosine && parts.len() == 4 {
-            bail!("cosine configs do not take a weighted flag: {value}");
+        if !matches!(metric, Metric::Entropy | Metric::ModifiedEntropy) && parts.len() == 4 {
+            bail!("{} configs do not take a weighted flag: {value}", parts[0]);
         }
 
         Ok(Self {

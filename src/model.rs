@@ -34,8 +34,20 @@ impl DatasetName {
 pub enum Metric {
     /// Linear cosine similarity.
     Cosine,
+    /// Modified linear cosine similarity.
+    ModifiedCosine,
     /// Entropy similarity.
     Entropy,
+    /// Modified entropy similarity.
+    ModifiedEntropy,
+}
+
+impl Metric {
+    /// Return whether this metric belongs to the cosine family.
+    #[must_use]
+    pub const fn is_cosine_family(self) -> bool {
+        matches!(self, Self::Cosine | Self::ModifiedCosine)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -60,8 +72,16 @@ impl SimilarityConfig {
                 "cosine_mz{:.3}_int{:.3}",
                 self.mz_power, self.intensity_power
             ),
+            Metric::ModifiedCosine => format!(
+                "modified_cosine_mz{:.3}_int{:.3}",
+                self.mz_power, self.intensity_power
+            ),
             Metric::Entropy => format!(
                 "entropy_mz{:.3}_int{:.3}_weighted{}",
+                self.mz_power, self.intensity_power, self.entropy_weighted
+            ),
+            Metric::ModifiedEntropy => format!(
+                "modified_entropy_mz{:.3}_int{:.3}_weighted{}",
                 self.mz_power, self.intensity_power, self.entropy_weighted
             ),
         }
@@ -72,7 +92,9 @@ impl SimilarityConfig {
     pub const fn metric_label(&self) -> &'static str {
         match self.metric {
             Metric::Cosine => "cosine",
+            Metric::ModifiedCosine => "modified_cosine",
             Metric::Entropy => "entropy",
+            Metric::ModifiedEntropy => "modified_entropy",
         }
     }
 }
@@ -85,9 +107,19 @@ impl fmt::Display for SimilarityConfig {
                 "cosine:{}:{}",
                 self.mz_power, self.intensity_power
             ),
+            Metric::ModifiedCosine => write!(
+                formatter,
+                "modified-cosine:{}:{}",
+                self.mz_power, self.intensity_power
+            ),
             Metric::Entropy => write!(
                 formatter,
                 "entropy:{}:{}:{}",
+                self.mz_power, self.intensity_power, self.entropy_weighted
+            ),
+            Metric::ModifiedEntropy => write!(
+                formatter,
+                "modified-entropy:{}:{}:{}",
                 self.mz_power, self.intensity_power, self.entropy_weighted
             ),
         }
