@@ -395,11 +395,11 @@ impl HeatmapScales {
     /// Build global scales from all dense matrices.
     fn from_arrays(arrays: &GridArrays) -> Self {
         Self {
-            mean_delta: HeatmapScale::diverging_zero(max_abs(arrays.mean_delta.view())),
+            mean_delta: HeatmapScale::diverging_zero(max_abs(&arrays.mean_delta.view())),
             unit_interval: HeatmapScale::sequential(0.0, 1.0),
             wasserstein_1d: HeatmapScale::sequential(
                 0.0,
-                finite_max(arrays.wasserstein_1d.view()).unwrap_or(1.0),
+                finite_max(&arrays.wasserstein_1d.view()).unwrap_or(1.0),
             ),
         }
     }
@@ -459,7 +459,7 @@ impl HeatmapScale {
 }
 
 /// Return the maximum absolute finite value in a matrix.
-fn max_abs(values: ArrayView3<'_, f64>) -> f64 {
+fn max_abs(values: &ArrayView3<'_, f64>) -> f64 {
     values
         .iter()
         .copied()
@@ -469,7 +469,7 @@ fn max_abs(values: ArrayView3<'_, f64>) -> f64 {
 }
 
 /// Return the maximum finite value in a matrix.
-fn finite_max(values: ArrayView3<'_, f64>) -> Option<f64> {
+fn finite_max(values: &ArrayView3<'_, f64>) -> Option<f64> {
     values
         .iter()
         .copied()
