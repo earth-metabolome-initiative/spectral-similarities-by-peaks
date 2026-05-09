@@ -1,23 +1,28 @@
 //! Command execution for the experiment binary.
 
-use std::fs;
+use std::{fs, path::Path};
 
 use anyhow::{Context, Result, bail};
+use arrow_array::{RecordBatch, StringArray, UInt64Array};
+use ndarray::{Array1, Array3};
+use ndarray_npy::NpzReader;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rayon::prelude::*;
 
 use crate::{
     checkpoint::{self, CheckpointBase, RunFingerprint},
-    cli::{Cli, Commands, ScanArgs},
+    cli::{Cli, Commands, RenderHeatmapArgs, ScanArgs},
     data::load_records,
     distribution::{
         compare_distributions, histogram_sorted_distribution, summarize_sorted_distribution,
     },
     model::{LoadedRecord, ScoreDistribution, SimilarityConfig},
     neighbors::{SearchBatch, compute_neighbors},
-    output::OutputWriters,
+    output::{GridArrays, OutputWriters},
     pathway::score_pathway_representatives,
     progress::{ProgressTask, ScanProgress},
     spectra::{prepare_spectra, select_query_ids, select_reference_ids},
+    visualize::write_heatmaps,
 };
 
 /// Maximum top-intensity peak count evaluated by every scan.
@@ -33,7 +38,84 @@ const MAX_PEAK_COUNT: usize = 128;
 pub fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Scan(args) => run_scan(args),
+        Commands::RenderHeatmaps(args) => run_render_heatmaps(&args),
     }
+}
+
+/// Re-render heatmap artifacts from an existing scan output directory.
+fn run_render_heatmaps(args: &RenderHeatmapArgs) -> Result<()> {
+    let progress = ScanProgress::new();
+    let arrays = read_grid_npz(&args.output_dir)?;
+    let configs = read_grid_configs(&args.output_dir)?;
+    write_heatmaps(&args.output_dir, &configs, &arrays, &progress)
+}
+
+/// Read dense grid matrices from an existing `distribution_grid.npz` artifact.
+fn read_grid_npz(output_dir: &Path) -> Result<GridArrays> {
+    let path = output_dir.join("distribution_grid.npz");
+    let file = fs::File::open(&path).with_context(|| format!("opening {}", path.display()))?;
+    let mut reader = NpzReader::new(file).with_context(|| format!("reading {}", path.display()))?;
+    let peak_counts: Array1<u64> = reader.by_name("peak_counts.npy")?;
+    let mean_delta: Array3<f64> = reader.by_name("mean_delta.npy")?;
+    let ks_statistic: Array3<f64> = reader.by_name("ks_statistic.npy")?;
+    let ks_pvalue_asymptotic: Array3<f64> = reader.by_name("ks_pvalue_asymptotic.npy")?;
+    let wasserstein_1d: Array3<f64> = reader.by_name("wasserstein_1d.npy")?;
+    Ok(GridArrays {
+        peak_counts,
+        mean_delta,
+        ks_statistic,
+        ks_pvalue_asymptotic,
+        wasserstein_1d,
+    })
+}
+
+/// Read heatmap config labels from `distribution_grid_configs.parquet`.
+fn read_grid_configs(output_dir: &Path) -> Result<Vec<String>> {
+    let path = output_dir.join("distribution_grid_configs.parquet");
+    let file = fs::File::open(&path).with_context(|| format!("opening {}", path.display()))?;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .with_context(|| format!("reading metadata from {}", path.display()))?
+        .build()
+        .with_context(|| format!("building reader for {}", path.display()))?;
+
+    let mut configs = Vec::<(usize, String)>::new();
+    for batch in reader {
+        read_grid_config_batch(&batch?, &mut configs)?;
+    }
+    configs.sort_by_key(|(config_index, _config)| *config_index);
+    let configs = configs
+        .into_iter()
+        .map(|(_config_index, config)| config)
+        .collect::<Vec<_>>();
+    if configs.is_empty() {
+        bail!("{} contains no heatmap configs", path.display());
+    }
+    Ok(configs)
+}
+
+/// Append grid config rows from one `Arrow` record batch.
+fn read_grid_config_batch(batch: &RecordBatch, configs: &mut Vec<(usize, String)>) -> Result<()> {
+    let config_indices = required_column::<UInt64Array>(batch, "config_index")?;
+    let config_names = required_column::<StringArray>(batch, "config")?;
+    for row in 0..batch.num_rows() {
+        let config_index = usize::try_from(config_indices.value(row))
+            .context("config_index does not fit usize")?;
+        configs.push((config_index, config_names.value(row).to_string()));
+    }
+    Ok(())
+}
+
+/// Return a typed required `Arrow` column from a record batch.
+fn required_column<'a, ArrayType: 'static>(
+    batch: &'a RecordBatch,
+    name: &str,
+) -> Result<&'a ArrayType> {
+    batch
+        .column_by_name(name)
+        .with_context(|| format!("missing {name} column"))?
+        .as_any()
+        .downcast_ref::<ArrayType>()
+        .with_context(|| format!("{name} column has unexpected type"))
 }
 
 /// Execute a full similarity scan and write all artifacts.
@@ -440,8 +522,10 @@ mod tests {
             "--seed",
             "99",
         ])?;
-        let Commands::Scan(args) = cli.command;
-        Ok(args)
+        match cli.command {
+            Commands::Scan(args) => Ok(args),
+            Commands::RenderHeatmaps(_args) => anyhow::bail!("expected scan command"),
+        }
     }
 
     /// Return a unique temporary directory for one scan test.

@@ -43,6 +43,8 @@ pub struct Cli {
 pub enum Commands {
     /// Compute top-neighbor similarity distributions across peak cutoffs.
     Scan(ScanArgs),
+    /// Re-render heatmaps from an existing scan output directory.
+    RenderHeatmaps(RenderHeatmapArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -100,6 +102,14 @@ pub struct ScanArgs {
     /// Keep close peaks instead of merging them before indexing.
     #[arg(long, default_value_t = false)]
     pub no_merge_close_peaks: bool,
+}
+
+#[derive(Debug, Parser)]
+/// Arguments for the `render-heatmaps` subcommand.
+pub struct RenderHeatmapArgs {
+    /// Existing scan output directory with dense grid artifacts.
+    #[arg(long, default_value = "results")]
+    pub output_dir: PathBuf,
 }
 
 impl ScanArgs {
