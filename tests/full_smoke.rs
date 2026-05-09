@@ -33,13 +33,13 @@ fn full_scan_smoke_test_produces_expected_artifacts() -> Result<(), Box<dyn Erro
         !output_dir.join("similarities.parquet").exists(),
         "raw similarity hits should not be persisted"
     );
-    assert_parquet_rows(&output_dir.join("distribution_summary.parquet"), 384)?;
-    assert_parquet_rows(&output_dir.join("distribution_histograms.parquet"), 1_920)?;
-    assert_parquet_rows(&output_dir.join("distribution_tests.parquet"), 381)?;
-    assert_parquet_rows(&output_dir.join("distribution_grid.parquet"), 49_152)?;
-    assert_parquet_rows(&output_dir.join("distribution_grid_configs.parquet"), 3)?;
-    assert_parquet_rows(&output_dir.join("pathway_scores.parquet"), 12_288)?;
-    assert_parquet_rows(&output_dir.join("pathway_predictions.parquet"), 3_072)?;
+    assert_parquet_rows(&output_dir.join("distribution_summary.parquet"), 2_304)?;
+    assert_parquet_rows(&output_dir.join("distribution_histograms.parquet"), 11_520)?;
+    assert_parquet_rows(&output_dir.join("distribution_tests.parquet"), 2_286)?;
+    assert_parquet_rows(&output_dir.join("distribution_grid.parquet"), 294_912)?;
+    assert_parquet_rows(&output_dir.join("distribution_grid_configs.parquet"), 18)?;
+    assert_parquet_rows(&output_dir.join("pathway_scores.parquet"), 86_016)?;
+    assert_parquet_rows(&output_dir.join("pathway_predictions.parquet"), 21_504)?;
     assert_grid_npz_shapes(&output_dir.join("distribution_grid.npz"))?;
     assert_heatmap_artifacts(&output_dir)?;
 
@@ -65,9 +65,39 @@ fn smoke_scan_cli(data_dir: &Path, output_dir: &Path) -> Result<Cli, Box<dyn Err
         "--similarity-config",
         "cosine:0.0:1.0",
         "--similarity-config",
+        "modified-cosine:0.0:1.0",
+        "--similarity-config",
+        "cosine:1.0:1.0",
+        "--similarity-config",
+        "modified-cosine:1.0:1.0",
+        "--similarity-config",
+        "cosine:0.0:0.5",
+        "--similarity-config",
+        "modified-cosine:0.0:0.5",
+        "--similarity-config",
         "cosine:1.0:0.5",
         "--similarity-config",
+        "modified-cosine:1.0:0.5",
+        "--similarity-config",
+        "cosine:0.0:0.25",
+        "--similarity-config",
+        "modified-cosine:0.0:0.25",
+        "--similarity-config",
+        "cosine:1.0:0.25",
+        "--similarity-config",
+        "modified-cosine:1.0:0.25",
+        "--similarity-config",
+        "cosine:3.0:0.6",
+        "--similarity-config",
+        "modified-cosine:3.0:0.6",
+        "--similarity-config",
         "entropy:0.0:1.0:true",
+        "--similarity-config",
+        "modified-entropy:0.0:1.0:true",
+        "--similarity-config",
+        "entropy:0.0:1.0:false",
+        "--similarity-config",
+        "modified-entropy:0.0:1.0:false",
         "--neighbors",
         "3",
         "--mz-tolerance",
@@ -139,8 +169,23 @@ fn smoke_root() -> Result<PathBuf, Box<dyn Error>> {
 fn assert_distribution_checkpoints(output_dir: &Path) -> Result<(), Box<dyn Error>> {
     for config in [
         "cosine_mz0.000_int1.000",
+        "modified_cosine_mz0.000_int1.000",
+        "cosine_mz1.000_int1.000",
+        "modified_cosine_mz1.000_int1.000",
+        "cosine_mz0.000_int0.500",
+        "modified_cosine_mz0.000_int0.500",
         "cosine_mz1.000_int0.500",
+        "modified_cosine_mz1.000_int0.500",
+        "cosine_mz0.000_int0.250",
+        "modified_cosine_mz0.000_int0.250",
+        "cosine_mz1.000_int0.250",
+        "modified_cosine_mz1.000_int0.250",
+        "cosine_mz3.000_int0.600",
+        "modified_cosine_mz3.000_int0.600",
         "entropy_mz0.000_int1.000_weightedtrue",
+        "modified_entropy_mz0.000_int1.000_weightedtrue",
+        "entropy_mz0.000_int1.000_weightedfalse",
+        "modified_entropy_mz0.000_int1.000_weightedfalse",
     ] {
         for peak_count in 1..=128 {
             let path = output_dir
@@ -182,10 +227,10 @@ fn assert_grid_npz_shapes(path: &Path) -> Result<(), Box<dyn Error>> {
     let mean_delta: Array3<f64> = reader.by_name("mean_delta.npy")?;
 
     assert_eq!(peak_counts.len(), 128);
-    assert_eq!(ks_statistic.shape(), &[3, 128, 128]);
-    assert_eq!(ks_pvalue.shape(), &[3, 128, 128]);
-    assert_eq!(wasserstein.shape(), &[3, 128, 128]);
-    assert_eq!(mean_delta.shape(), &[3, 128, 128]);
+    assert_eq!(ks_statistic.shape(), &[18, 128, 128]);
+    assert_eq!(ks_pvalue.shape(), &[18, 128, 128]);
+    assert_eq!(wasserstein.shape(), &[18, 128, 128]);
+    assert_eq!(mean_delta.shape(), &[18, 128, 128]);
     Ok(())
 }
 
@@ -193,8 +238,23 @@ fn assert_grid_npz_shapes(path: &Path) -> Result<(), Box<dyn Error>> {
 fn assert_heatmap_artifacts(output_dir: &Path) -> Result<(), Box<dyn Error>> {
     for config in [
         "cosine_mz0.000_int1.000",
+        "modified_cosine_mz0.000_int1.000",
+        "cosine_mz1.000_int1.000",
+        "modified_cosine_mz1.000_int1.000",
+        "cosine_mz0.000_int0.500",
+        "modified_cosine_mz0.000_int0.500",
         "cosine_mz1.000_int0.500",
+        "modified_cosine_mz1.000_int0.500",
+        "cosine_mz0.000_int0.250",
+        "modified_cosine_mz0.000_int0.250",
+        "cosine_mz1.000_int0.250",
+        "modified_cosine_mz1.000_int0.250",
+        "cosine_mz3.000_int0.600",
+        "modified_cosine_mz3.000_int0.600",
         "entropy_mz0.000_int1.000_weightedtrue",
+        "modified_entropy_mz0.000_int1.000_weightedtrue",
+        "entropy_mz0.000_int1.000_weightedfalse",
+        "modified_entropy_mz0.000_int1.000_weightedfalse",
     ] {
         for metric in [
             "mean_delta",

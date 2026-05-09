@@ -10,9 +10,23 @@ use crate::model::{DatasetName, Metric, SimilarityConfig};
 /// Similarity configurations evaluated when no explicit configuration is given.
 const DEFAULT_SIMILARITY_CONFIGS: &[&str] = &[
     "cosine:0.0:1.0",
+    "modified-cosine:0.0:1.0",
+    "cosine:1.0:1.0",
+    "modified-cosine:1.0:1.0",
     "cosine:0.0:0.5",
+    "modified-cosine:0.0:0.5",
     "cosine:1.0:0.5",
+    "modified-cosine:1.0:0.5",
+    "cosine:0.0:0.25",
+    "modified-cosine:0.0:0.25",
+    "cosine:1.0:0.25",
+    "modified-cosine:1.0:0.25",
+    "cosine:3.0:0.6",
+    "modified-cosine:3.0:0.6",
     "entropy:0.0:1.0:true",
+    "modified-entropy:0.0:1.0:true",
+    "entropy:0.0:1.0:false",
+    "modified-entropy:0.0:1.0:false",
 ];
 
 #[derive(Debug, Parser)]
