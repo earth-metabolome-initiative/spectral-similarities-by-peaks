@@ -63,8 +63,31 @@ pub fn write_pathway_prediction_artifacts(
     output_dir: &Path,
     progress: &ScanProgress,
 ) -> Result<()> {
+    write_pathway_prediction_artifacts_with_mode(output_dir, progress, MissingPredictions::Skip)
+}
+
+/// Read an existing `pathway_predictions.parquet` and fail if it is unavailable.
+pub fn write_existing_pathway_prediction_artifacts(
+    output_dir: &Path,
+    progress: &ScanProgress,
+) -> Result<()> {
+    write_pathway_prediction_artifacts_with_mode(output_dir, progress, MissingPredictions::Error)
+}
+
+/// Read `pathway_predictions.parquet` and write derived artifacts.
+fn write_pathway_prediction_artifacts_with_mode(
+    output_dir: &Path,
+    progress: &ScanProgress,
+    missing_predictions: MissingPredictions,
+) -> Result<()> {
     let predictions_path = output_dir.join("pathway_predictions.parquet");
     if !predictions_path.exists() {
+        if missing_predictions.should_error() {
+            bail!(
+                "{} does not exist; run the scan with --pathway-representatives-per-class > 0 first",
+                predictions_path.display()
+            );
+        }
         return Ok(());
     }
 
@@ -72,6 +95,12 @@ pub fn write_pathway_prediction_artifacts(
     let aggregation = read_prediction_aggregation(&predictions_path)?;
     read_progress.finish();
     if aggregation.is_empty() {
+        if missing_predictions.should_error() {
+            bail!(
+                "{} contains no pathway prediction rows",
+                predictions_path.display()
+            );
+        }
         return Ok(());
     }
 
@@ -101,6 +130,22 @@ pub fn write_pathway_prediction_artifacts(
         &artifacts.metric_rows,
         progress,
     )
+}
+
+/// Behavior when pathway prediction rows are unavailable.
+#[derive(Clone, Copy)]
+enum MissingPredictions {
+    /// Return success without writing derived artifacts.
+    Skip,
+    /// Return an error explaining why artifacts cannot be produced.
+    Error,
+}
+
+impl MissingPredictions {
+    /// Return whether missing predictions should be treated as an error.
+    const fn should_error(self) -> bool {
+        matches!(self, Self::Error)
+    }
 }
 
 /// Read pathway prediction rows into compact categorical and confusion counts.

@@ -173,6 +173,34 @@ fn scan_help_is_available() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[test]
+/// Pathway artifact rendering reports missing prediction inputs.
+fn render_pathway_artifacts_requires_predictions() -> Result<(), Box<dyn Error>> {
+    let root = smoke_root()?;
+    let output_dir = root.join("out");
+    fs::create_dir_all(&output_dir)?;
+
+    let cli = Cli::try_parse_from([
+        "spectral-similarities-by-peaks",
+        "render-pathway-artifacts",
+        "--output-dir",
+        output_dir
+            .to_str()
+            .ok_or("temporary output directory path is not valid UTF-8")?,
+    ])?;
+    let Err(error) = run::run(cli) else {
+        return Err(std::io::Error::other("missing pathway predictions should fail").into());
+    };
+    let message = error.to_string();
+    assert!(
+        message.contains("pathway_predictions.parquet"),
+        "unexpected error: {message}"
+    );
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
 /// Return a unique temporary root for one smoke-test invocation.
 fn smoke_root() -> Result<PathBuf, Box<dyn Error>> {
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?;

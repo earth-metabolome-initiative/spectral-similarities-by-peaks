@@ -114,7 +114,7 @@ fn select_pathway_representatives(
     representatives
 }
 
-/// Split a raw `NPC_PATHWAY` field into unique pathway labels.
+/// Split a raw `NPC_PATHWAYS` field into unique pathway labels.
 pub fn pathway_labels(raw: Option<&str>) -> Vec<String> {
     raw.into_iter()
         .flat_map(|labels| labels.split('|'))

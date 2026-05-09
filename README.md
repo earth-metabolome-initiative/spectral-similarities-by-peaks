@@ -94,4 +94,9 @@ The peak-count grid is always `1..=128`, so `distribution_grid.npz` contains ful
 
 The current distribution comparisons avoid assuming a parametric score family. The nonparametric outputs include empirical quantiles, fixed-bin histograms, two-sample KS statistic, asymptotic KS p-value, and 1D Wasserstein distance.
 
-Existing `pathway_predictions.parquet` outputs can be reprocessed with `render-pathway-artifacts`.
+Existing `pathway_predictions.parquet` outputs can be reprocessed with `render-pathway-artifacts`:
+
+```bash
+target/release/spectral-similarities-by-peaks render-pathway-artifacts \
+  --output-dir results/harmonized-full
+```

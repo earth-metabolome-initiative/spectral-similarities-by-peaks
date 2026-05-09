@@ -19,8 +19,10 @@ use crate::{
     model::{LoadedRecord, PEAK_COUNT_GRID_SIZE, ScoreDistribution, SimilarityConfig},
     neighbors::{SearchBatch, compute_neighbors},
     output::{GridArrays, OutputWriters},
-    pathway::score_pathway_representatives,
-    pathway_artifacts::write_pathway_prediction_artifacts,
+    pathway::{pathway_labels, score_pathway_representatives},
+    pathway_artifacts::{
+        write_existing_pathway_prediction_artifacts, write_pathway_prediction_artifacts,
+    },
     progress::{ProgressTask, ScanProgress},
     spectra::{prepare_spectra, select_query_ids, select_reference_ids},
     visualize::write_heatmaps,
@@ -52,7 +54,7 @@ fn run_render_heatmaps(args: &RenderHeatmapArgs) -> Result<()> {
 /// Rebuild pathway prediction artifacts from an existing scan output directory.
 fn run_render_pathway_artifacts(args: &RenderPathwayArtifactArgs) -> Result<()> {
     let progress = ScanProgress::new();
-    write_pathway_prediction_artifacts(&args.output_dir, &progress)
+    write_existing_pathway_prediction_artifacts(&args.output_dir, &progress)
 }
 
 /// Read dense grid matrices from an existing `distribution_grid.npz` artifact.
@@ -139,6 +141,7 @@ fn run_scan(mut args: ScanArgs) -> Result<()> {
     if records.is_empty() {
         bail!("no spectra loaded");
     }
+    ensure_pathway_labels_available(&args, &records)?;
 
     let query_ids = select_query_ids(records.len(), args.row_sample_size, args.seed);
     let reference_ids = select_reference_ids(records.len(), args.reference_sample_size, args.seed);
@@ -171,6 +174,24 @@ fn run_scan(mut args: ScanArgs) -> Result<()> {
 
     writers.finish(&progress)?;
     write_pathway_prediction_artifacts(&args.output_dir, &progress)
+}
+
+/// Ensure pathway scoring was not requested on records without pathway labels.
+fn ensure_pathway_labels_available(args: &ScanArgs, records: &[LoadedRecord]) -> Result<()> {
+    if args.pathway_representatives_per_class == 0 {
+        return Ok(());
+    }
+    let labeled_records = records
+        .iter()
+        .filter(|record| !pathway_labels(record.npc_pathway.as_deref()).is_empty())
+        .count();
+    if labeled_records == 0 {
+        bail!(
+            "pathway scoring was requested with --pathway-representatives-per-class {}, but no loaded records contain NPC_PATHWAYS labels",
+            args.pathway_representatives_per_class
+        );
+    }
+    Ok(())
 }
 
 /// Shared immutable inputs for one scan.
@@ -430,16 +451,17 @@ mod tests {
 
     use anyhow::{Context, Result};
     use clap::Parser;
+    use mass_spectrometry::prelude::GenericSpectrum;
 
     use crate::{
         checkpoint::{self, CheckpointBase},
         cli::{Cli, Commands},
         data::load_records,
-        model::ScoreDistribution,
+        model::{LoadedRecord, ScoreDistribution},
         spectra::{select_query_ids, select_reference_ids},
     };
 
-    use super::run_scan;
+    use super::{ensure_pathway_labels_available, run_scan};
 
     #[test]
     /// A valid cached distribution is reused while missing peak counts are computed.
@@ -494,6 +516,34 @@ mod tests {
         assert!(
             checkpoint::checkpoint_path(&output_dir, &config_name, 2).exists(),
             "missing peak counts should be computed and checkpointed"
+        );
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    /// Pathway scoring fails before a long scan when no pathway labels are loaded.
+    fn pathway_scoring_requires_loaded_pathway_labels() -> Result<()> {
+        let root = temp_root("pathway-labels")?;
+        let data_dir = root.join("data");
+        let output_dir = root.join("out");
+        fs::create_dir_all(&data_dir)?;
+
+        let mut args = scan_args(&data_dir, &output_dir)?;
+        args.pathway_representatives_per_class = 5;
+        let records = vec![LoadedRecord {
+            id: "unlabeled".to_string(),
+            npc_pathway: None,
+            spectrum: GenericSpectrum::try_with_capacity(100.0, 0)?,
+        }];
+
+        let Err(error) = ensure_pathway_labels_available(&args, &records) else {
+            anyhow::bail!("pathway scoring without labels should fail");
+        };
+        assert!(
+            error.to_string().contains("NPC_PATHWAYS"),
+            "unexpected error: {error}"
         );
 
         fs::remove_dir_all(root)?;
