@@ -17,6 +17,8 @@ mod neighbors;
 mod output;
 /// Fixed-representative `NPC` pathway scoring.
 mod pathway;
+/// Derived pathway-prediction summaries and visualizations.
+mod pathway_artifacts;
 /// Progress-bar helpers for long-running local scans.
 mod progress;
 /// Top-level command orchestration.

@@ -38,10 +38,24 @@ fn full_scan_smoke_test_produces_expected_artifacts() -> Result<(), Box<dyn Erro
     assert_parquet_rows(&output_dir.join("distribution_tests.parquet"), 2_286)?;
     assert_parquet_rows(&output_dir.join("distribution_grid.parquet"), 294_912)?;
     assert_parquet_rows(&output_dir.join("distribution_grid_configs.parquet"), 18)?;
-    assert_parquet_rows(&output_dir.join("pathway_scores.parquet"), 86_016)?;
-    assert_parquet_rows(&output_dir.join("pathway_predictions.parquet"), 21_504)?;
+    assert_parquet_rows(&output_dir.join("pathway_scores.parquet"), 110_592)?;
+    assert_parquet_rows(&output_dir.join("pathway_predictions.parquet"), 27_648)?;
+    assert_parquet_rows(
+        &output_dir.join("pathway_prediction_metrics.parquet"),
+        11_520,
+    )?;
+    assert_parquet_rows(
+        &output_dir.join("pathway_prediction_distribution_grid.parquet"),
+        294_912,
+    )?;
+    assert_parquet_rows(
+        &output_dir.join("pathway_prediction_distribution_grid_configs.parquet"),
+        18,
+    )?;
     assert_grid_npz_shapes(&output_dir.join("distribution_grid.npz"))?;
+    assert_pathway_grid_npz_shapes(&output_dir.join("pathway_prediction_distribution_grid.npz"))?;
     assert_heatmap_artifacts(&output_dir)?;
+    assert_pathway_prediction_artifacts(&output_dir)?;
 
     fs::remove_dir_all(root)?;
     Ok(())
@@ -128,6 +142,10 @@ fn top_level_help_is_available() -> Result<(), Box<dyn Error>> {
         "unexpected help output: {stdout}"
     );
     assert!(stdout.contains("scan"), "missing scan command: {stdout}");
+    assert!(
+        stdout.contains("render-pathway-artifacts"),
+        "missing pathway artifact command: {stdout}"
+    );
     Ok(())
 }
 
@@ -234,6 +252,22 @@ fn assert_grid_npz_shapes(path: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Assert that the pathway prediction dense-grid artifact has the expected axes.
+fn assert_pathway_grid_npz_shapes(path: &Path) -> Result<(), Box<dyn Error>> {
+    let file = fs::File::open(path)?;
+    let mut reader = NpzReader::new(file)?;
+    let peak_counts: Array1<u64> = reader.by_name("peak_counts.npy")?;
+    let total_variation: Array3<f64> = reader.by_name("total_variation.npy")?;
+    let jensen_shannon: Array3<f64> = reader.by_name("jensen_shannon_distance.npy")?;
+    let hellinger: Array3<f64> = reader.by_name("hellinger_distance.npy")?;
+
+    assert_eq!(peak_counts.len(), 128);
+    assert_eq!(total_variation.shape(), &[18, 128, 128]);
+    assert_eq!(jensen_shannon.shape(), &[18, 128, 128]);
+    assert_eq!(hellinger.shape(), &[18, 128, 128]);
+    Ok(())
+}
+
 /// Assert that every smoke-test heatmap was written in SVG and PNG form.
 fn assert_heatmap_artifacts(output_dir: &Path) -> Result<(), Box<dyn Error>> {
     for config in [
@@ -263,6 +297,52 @@ fn assert_heatmap_artifacts(output_dir: &Path) -> Result<(), Box<dyn Error>> {
             "wasserstein_1d",
         ] {
             let stem = output_dir.join("heatmaps").join(config).join(metric);
+            assert_svg_artifact(&stem.with_extension("svg"))?;
+            assert_png_artifact(&stem.with_extension("png"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Assert that every smoke-test pathway prediction plot was written.
+fn assert_pathway_prediction_artifacts(output_dir: &Path) -> Result<(), Box<dyn Error>> {
+    for config in [
+        "cosine_mz0.000_int1.000",
+        "modified_cosine_mz0.000_int1.000",
+        "cosine_mz1.000_int1.000",
+        "modified_cosine_mz1.000_int1.000",
+        "cosine_mz0.000_int0.500",
+        "modified_cosine_mz0.000_int0.500",
+        "cosine_mz1.000_int0.500",
+        "modified_cosine_mz1.000_int0.500",
+        "cosine_mz0.000_int0.250",
+        "modified_cosine_mz0.000_int0.250",
+        "cosine_mz1.000_int0.250",
+        "modified_cosine_mz1.000_int0.250",
+        "cosine_mz3.000_int0.600",
+        "modified_cosine_mz3.000_int0.600",
+        "entropy_mz0.000_int1.000_weightedtrue",
+        "modified_entropy_mz0.000_int1.000_weightedtrue",
+        "entropy_mz0.000_int1.000_weightedfalse",
+        "modified_entropy_mz0.000_int1.000_weightedfalse",
+    ] {
+        for metric in [
+            "total_variation",
+            "jensen_shannon_distance",
+            "hellinger_distance",
+        ] {
+            let stem = output_dir
+                .join("pathway_prediction_heatmaps")
+                .join(config)
+                .join(metric);
+            assert_svg_artifact(&stem.with_extension("svg"))?;
+            assert_png_artifact(&stem.with_extension("png"))?;
+        }
+        for metric in ["accuracy", "mcc"] {
+            let stem = output_dir
+                .join("pathway_prediction_plots")
+                .join(config)
+                .join(metric);
             assert_svg_artifact(&stem.with_extension("svg"))?;
             assert_png_artifact(&stem.with_extension("png"))?;
         }

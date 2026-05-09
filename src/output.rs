@@ -14,14 +14,11 @@ use ndarray_npy::NpzWriter;
 use parquet::arrow::ArrowWriter;
 
 use crate::model::{
-    DistributionComparison, DistributionHistogramBin, DistributionSummary, PathwayPrediction,
-    PathwayScore,
+    DistributionComparison, DistributionHistogramBin, DistributionSummary, PEAK_COUNT_GRID_SIZE,
+    PathwayPrediction, PathwayScore,
 };
 use crate::progress::ScanProgress;
 use crate::visualize::write_heatmaps;
-
-/// Number of peak-count rows and columns in dense grid artifacts.
-const GRID_SIZE: usize = 128;
 
 /// Writers for all scan artifacts.
 pub struct OutputWriters {
@@ -288,7 +285,11 @@ struct GridMatrixEntry {
 
 /// Build dense full-grid arrays from buffered comparison rows.
 fn build_grid_arrays(buffer: &GridMatrixBuffer) -> Result<GridArrays> {
-    let shape = (buffer.configs.len(), GRID_SIZE, GRID_SIZE);
+    let shape = (
+        buffer.configs.len(),
+        PEAK_COUNT_GRID_SIZE,
+        PEAK_COUNT_GRID_SIZE,
+    );
     let mut mean_delta = Array3::<f64>::zeros(shape);
     let mut ks_statistic = Array3::<f64>::zeros(shape);
     let mut ks_pvalue_asymptotic = Array3::<f64>::zeros(shape);
@@ -349,15 +350,15 @@ fn matrix_index(peak_count: usize) -> Result<usize> {
     let index = peak_count.checked_sub(1).with_context(|| {
         format!("peak count {peak_count} cannot be represented as a matrix index")
     })?;
-    if index >= GRID_SIZE {
-        bail!("peak count {peak_count} exceeds dense grid size {GRID_SIZE}");
+    if index >= PEAK_COUNT_GRID_SIZE {
+        bail!("peak count {peak_count} exceeds dense grid size {PEAK_COUNT_GRID_SIZE}");
     }
     Ok(index)
 }
 
 /// Return the `1..=128` peak-count axis as a `NumPy` array.
 fn peak_counts_array() -> Result<Array1<u64>> {
-    let values = (1..=GRID_SIZE)
+    let values = (1..=PEAK_COUNT_GRID_SIZE)
         .map(usize_to_u64)
         .collect::<Result<Vec<_>>>()?;
     Ok(Array1::from(values))

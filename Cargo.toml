@@ -20,7 +20,7 @@ mass_spectrometry = { git = "https://github.com/earth-metabolome-initiative/mass
 ndarray = "0.17"
 ndarray-npy = "0.10"
 parquet = { version = "58", features = ["arrow"] }
-plotters = { version = "0.3", default-features = false, features = ["ab_glyph", "bitmap_backend", "bitmap_encoder", "svg_backend"] }
+plotters = { version = "0.3", default-features = false, features = ["ab_glyph", "bitmap_backend", "bitmap_encoder", "line_series", "svg_backend"] }
 rand = "0.10"
 rand_chacha = "0.10"
 rayon = "1.11"

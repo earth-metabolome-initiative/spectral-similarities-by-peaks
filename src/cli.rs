@@ -45,6 +45,8 @@ pub enum Commands {
     Scan(ScanArgs),
     /// Re-render heatmaps from an existing scan output directory.
     RenderHeatmaps(RenderHeatmapArgs),
+    /// Rebuild pathway prediction summaries and plots from an existing scan.
+    RenderPathwayArtifacts(RenderPathwayArtifactArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -81,7 +83,7 @@ pub struct ScanArgs {
     /// Optional precursor m/z tolerance in Da for candidate filtering.
     #[arg(long)]
     pub pepmass_tolerance: Option<f64>,
-    /// Representatives sampled per NPC pathway for cosine-sum pathway scoring.
+    /// Representatives sampled per NPC pathway for similarity-sum pathway scoring.
     #[arg(long, default_value_t = 0)]
     pub pathway_representatives_per_class: usize,
     /// Deterministic sample of query rows. The index still contains all loaded spectra.
@@ -108,6 +110,14 @@ pub struct ScanArgs {
 /// Arguments for the `render-heatmaps` subcommand.
 pub struct RenderHeatmapArgs {
     /// Existing scan output directory with dense grid artifacts.
+    #[arg(long, default_value = "results")]
+    pub output_dir: PathBuf,
+}
+
+#[derive(Debug, Parser)]
+/// Arguments for the `render-pathway-artifacts` subcommand.
+pub struct RenderPathwayArtifactArgs {
+    /// Existing scan output directory with `pathway_predictions.parquet`.
     #[arg(long, default_value = "results")]
     pub output_dir: PathBuf,
 }

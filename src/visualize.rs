@@ -100,7 +100,7 @@ pub fn write_heatmaps(
 }
 
 /// Ensure Plotters can render text without native fontconfig or `FreeType` bindings.
-fn ensure_heatmap_font() -> Result<()> {
+pub fn ensure_heatmap_font() -> Result<()> {
     match HEATMAP_FONT_REGISTRATION.get_or_init(register_heatmap_font) {
         Ok(()) => Ok(()),
         Err(message) => bail!("{message}"),
@@ -616,7 +616,7 @@ fn usize_to_i32(value: usize) -> Result<i32> {
 }
 
 /// Return a filesystem-safe path component.
-fn sanitize_path_component(raw: &str) -> PathBuf {
+pub fn sanitize_path_component(raw: &str) -> PathBuf {
     let mut sanitized = String::with_capacity(raw.len());
     for character in raw.chars() {
         if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
@@ -634,6 +634,6 @@ fn sanitize_path_component(raw: &str) -> PathBuf {
 }
 
 /// Convert a plotters backend error into an anyhow error.
-fn plotters_error<Error: std::fmt::Debug>(error: Error) -> anyhow::Error {
+pub fn plotters_error<Error: std::fmt::Debug>(error: Error) -> anyhow::Error {
     anyhow!("{error:?}")
 }

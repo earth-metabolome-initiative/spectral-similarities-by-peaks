@@ -6,6 +6,9 @@ use std::fmt;
 use mass_spectrometry::prelude::GenericSpectrum;
 use serde::{Deserialize, Serialize};
 
+/// Number of retained-peak cutoffs evaluated by every full scan.
+pub const PEAK_COUNT_GRID_SIZE: usize = 128;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Dataset supported by the experiment runner.
 pub enum DatasetName {
@@ -40,14 +43,6 @@ pub enum Metric {
     Entropy,
     /// Modified entropy similarity.
     ModifiedEntropy,
-}
-
-impl Metric {
-    /// Return whether this metric belongs to the cosine family.
-    #[must_use]
-    pub const fn is_cosine_family(self) -> bool {
-        matches!(self, Self::Cosine | Self::ModifiedCosine)
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -240,7 +235,7 @@ pub struct DistributionHistogramBin {
 }
 
 #[derive(Debug, Serialize)]
-/// Cosine-sum score for one query against one candidate pathway.
+/// Similarity-sum score for one query against one candidate pathway.
 pub struct PathwayScore {
     /// Dataset label.
     pub dataset: String,
@@ -258,12 +253,12 @@ pub struct PathwayScore {
     pub candidate_npc_pathway: String,
     /// Number of representative spectra for the candidate pathway.
     pub representatives: usize,
-    /// Sum of cosine similarities to the candidate pathway representatives.
+    /// Sum of similarities to the candidate pathway representatives.
     pub score: f64,
 }
 
 #[derive(Debug, Serialize)]
-/// Best pathway prediction produced by cosine-sum representative scoring.
+/// Best pathway prediction produced by similarity-sum representative scoring.
 pub struct PathwayPrediction {
     /// Dataset label.
     pub dataset: String,

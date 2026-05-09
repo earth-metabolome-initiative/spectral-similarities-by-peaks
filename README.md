@@ -14,7 +14,7 @@ The first executable slice is a Rust CLI that:
 - merges peaks closer than `2 * mz_tolerance` by default, matching the well-separated precondition used by the linear/Flash similarity implementations in `mass_spectrometry`;
 - computes exact top non-self neighbors with direct and modified Flash cosine or Flash entropy indexes;
 - writes raw neighbor scores, per-cutoff histograms, adjacent peak-count comparisons, and full pairwise peak-count comparison grids.
-- optionally scores NPC pathways by summing direct or modified cosine similarity to a fixed number of pathway representatives.
+- optionally scores NPC pathways by summing the selected spectrum similarity to a fixed number of pathway representatives.
 
 Experiment runs:
 
@@ -82,9 +82,16 @@ Outputs:
 - `distribution_grid_configs.parquet`: config-axis metadata for `distribution_grid.npz`.
 - `distributions/<config>/top_<k>.bincode`: serde checkpoints for sorted score distributions, reused automatically when a run is restarted with matching score-affecting arguments.
 - `heatmaps/<config>/*.svg` and `heatmaps/<config>/*.png`: static heatmaps for mean delta, KS statistic, asymptotic KS p-value, and 1D Wasserstein distance.
-- `pathway_scores.parquet`: optional direct/modified cosine-sum scores from each query to each NPC pathway representative group, emitted when `--pathway-representatives-per-class` is greater than zero.
-- `pathway_predictions.parquet`: optional best-pathway predictions from the representative direct/modified cosine sums.
+- `pathway_scores.parquet`: optional similarity-sum scores from each query to each NPC pathway representative group, emitted when `--pathway-representatives-per-class` is greater than zero.
+- `pathway_predictions.parquet`: optional best-pathway predictions from the representative similarity sums.
+- `pathway_prediction_metrics.parquet`: per-pathway one-vs-rest accuracy and MCC at every peak count, plus support-weighted averages.
+- `pathway_prediction_distribution_grid.parquet`: full pairwise peak-count comparison grid for categorical prediction distributions.
+- `pathway_prediction_distribution_grid.npz`: dense NumPy matrices for total variation, Jensen-Shannon distance, and Hellinger distance between prediction distributions.
+- `pathway_prediction_heatmaps/<config>/*.svg` and `pathway_prediction_heatmaps/<config>/*.png`: static heatmaps for categorical prediction-distribution drift.
+- `pathway_prediction_plots/<config>/*.svg` and `pathway_prediction_plots/<config>/*.png`: accuracy and MCC line plots by retained peak count, with one line per pathway and one support-weighted average line.
 
 The peak-count grid is always `1..=128`, so `distribution_grid.npz` contains full `128 x 128` matrices. `--row-sample-size` samples query rows, while `--reference-sample-size` samples the fixed reference columns used by nearest-neighbor search. The selected query and reference ids are reused across every peak count, so distribution changes are attributable to peak retention rather than changing samples.
 
 The current distribution comparisons avoid assuming a parametric score family. The nonparametric outputs include empirical quantiles, fixed-bin histograms, two-sample KS statistic, asymptotic KS p-value, and 1D Wasserstein distance.
+
+Existing `pathway_predictions.parquet` outputs can be reprocessed with `render-pathway-artifacts`.

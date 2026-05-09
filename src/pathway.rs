@@ -4,7 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result};
 use mass_spectrometry::prelude::{
-    FlashCosineThresholdIndex, GenericSpectrum, SearchState, SpectraIndexBuilder, TopKSearchState,
+    FlashCosineThresholdIndex, FlashEntropyIndex, FlashSearchResult, GenericSpectrum, SearchState,
+    SimilarityComputationError, SpectraIndexBuilder, TopKSearchState,
 };
 use rayon::prelude::*;
 
@@ -24,7 +25,7 @@ pub fn score_pathway_representatives(
     spectra: &[GenericSpectrum],
     query_ids: &[usize],
 ) -> Result<Option<(Vec<PathwayScore>, Vec<PathwayPrediction>)>> {
-    if !config.metric.is_cosine_family() || args.pathway_representatives_per_class == 0 {
+    if args.pathway_representatives_per_class == 0 {
         return Ok(None);
     }
 
@@ -38,20 +39,11 @@ pub fn score_pathway_representatives(
         .map(|representative| spectra[representative.record_index].clone())
         .collect::<Vec<_>>();
 
-    let mut builder = FlashCosineThresholdIndex::<f64>::builder()
-        .mz_power(config.mz_power)
-        .intensity_power(config.intensity_power)
-        .mz_tolerance(args.mz_tolerance)
-        .score_threshold(0.0)
-        .parallel();
-    if let Some(pepmass_tolerance) = args.pepmass_tolerance {
-        builder = builder.pepmass_tolerance(pepmass_tolerance)?;
-    }
     let config_name = config.name();
     let index_progress = progress.spinner(format!(
         "building pathway representative index for {config_name} top {peak_count} peaks"
     ));
-    let index = builder.build(&reference_spectra)?;
+    let index = RepresentativeIndex::build(args, config, &reference_spectra)?;
     index_progress.finish();
     let pathways = representative_pathways(&representatives);
     let task = progress.bar(
@@ -123,7 +115,7 @@ fn select_pathway_representatives(
 }
 
 /// Split a raw `NPC_PATHWAY` field into unique pathway labels.
-fn pathway_labels(raw: Option<&str>) -> Vec<String> {
+pub fn pathway_labels(raw: Option<&str>) -> Vec<String> {
     raw.into_iter()
         .flat_map(|labels| labels.split('|'))
         .map(str::trim)
@@ -157,7 +149,7 @@ fn score_query_pathways(
     query_index: usize,
     representatives: &[PathwayRepresentative],
     pathways: &BTreeMap<String, usize>,
-    index: &FlashCosineThresholdIndex<f64>,
+    index: &RepresentativeIndex,
     state: &mut SearchState,
     top_k_state: &mut TopKSearchState,
 ) -> Result<(Vec<PathwayScore>, PathwayPrediction)> {
@@ -178,23 +170,14 @@ fn score_query_pathways(
         .collect::<BTreeMap<_, _>>();
 
     let mut hits = Vec::with_capacity(representatives.len());
-    if config.metric == Metric::ModifiedCosine {
-        index.for_each_modified_top_k_with_state(
-            &spectra[query_index],
-            representatives.len(),
-            state,
-            top_k_state,
-            |hit| hits.push(hit),
-        )?;
-    } else {
-        index.for_each_top_k_with_state(
-            &spectra[query_index],
-            representatives.len(),
-            state,
-            top_k_state,
-            |hit| hits.push(hit),
-        )?;
-    }
+    index.for_each_top_k_with_state(
+        config.metric,
+        &spectra[query_index],
+        representatives.len(),
+        state,
+        top_k_state,
+        &mut |hit| hits.push(hit),
+    )?;
     for hit in hits {
         let representative_index =
             usize::try_from(hit.spectrum_id).context("representative index does not fit usize")?;
@@ -277,8 +260,95 @@ struct PathwayRepresentative {
 struct PathwayAggregate {
     /// Number of representative spectra assigned to the pathway.
     representatives: usize,
-    /// Sum of query cosine similarities to representatives.
+    /// Sum of query similarities to representatives.
     score: f64,
+}
+
+/// Metric-family-specific index over pathway representative spectra.
+enum RepresentativeIndex {
+    /// Linear-cosine index used for direct and modified cosine.
+    Cosine(FlashCosineThresholdIndex<f64>),
+    /// Entropy index used for direct and modified entropy.
+    Entropy(FlashEntropyIndex<f64>),
+}
+
+impl RepresentativeIndex {
+    /// Build the representative index matching the selected metric.
+    fn build(
+        args: &ScanArgs,
+        config: &SimilarityConfig,
+        spectra: &[GenericSpectrum],
+    ) -> Result<Self> {
+        match config.metric {
+            Metric::Cosine | Metric::ModifiedCosine => {
+                let mut builder = FlashCosineThresholdIndex::<f64>::builder()
+                    .mz_power(config.mz_power)
+                    .intensity_power(config.intensity_power)
+                    .mz_tolerance(args.mz_tolerance)
+                    .score_threshold(0.0)
+                    .parallel();
+                if let Some(pepmass_tolerance) = args.pepmass_tolerance {
+                    builder = builder.pepmass_tolerance(pepmass_tolerance)?;
+                }
+                Ok(Self::Cosine(builder.build(spectra)?))
+            }
+            Metric::Entropy | Metric::ModifiedEntropy => {
+                let mut builder = FlashEntropyIndex::<f64>::builder()
+                    .mz_power(config.mz_power)
+                    .intensity_power(config.intensity_power)
+                    .mz_tolerance(args.mz_tolerance)
+                    .weighted(config.entropy_weighted)
+                    .parallel();
+                if let Some(pepmass_tolerance) = args.pepmass_tolerance {
+                    builder = builder.pepmass_tolerance(pepmass_tolerance)?;
+                }
+                Ok(Self::Entropy(builder.build(spectra)?))
+            }
+        }
+    }
+
+    /// Return a fresh reusable search state for the underlying index.
+    fn new_search_state(&self) -> SearchState {
+        match self {
+            Self::Cosine(index) => index.new_search_state(),
+            Self::Entropy(index) => index.new_search_state(),
+        }
+    }
+
+    /// Emit the top representative hits for one query using the selected metric.
+    fn for_each_top_k_with_state(
+        &self,
+        metric: Metric,
+        query: &GenericSpectrum,
+        top_k: usize,
+        state: &mut SearchState,
+        top_k_state: &mut TopKSearchState,
+        emit: &mut dyn FnMut(FlashSearchResult),
+    ) -> std::result::Result<(), SimilarityComputationError> {
+        match (self, metric) {
+            (Self::Cosine(index), Metric::Cosine) => {
+                index.for_each_top_k_with_state(query, top_k, state, top_k_state, emit)
+            }
+            (Self::Cosine(index), Metric::ModifiedCosine) => {
+                index.for_each_modified_top_k_with_state(query, top_k, state, top_k_state, emit)
+            }
+            (Self::Entropy(index), Metric::Entropy) => index.for_each_top_k_threshold_with_state(
+                query,
+                top_k,
+                0.0,
+                state,
+                top_k_state,
+                emit,
+            ),
+            (Self::Entropy(index), Metric::ModifiedEntropy) => {
+                index.for_each_modified_top_k_with_state(query, top_k, state, top_k_state, emit)
+            }
+            (Self::Cosine(_), Metric::Entropy | Metric::ModifiedEntropy)
+            | (Self::Entropy(_), Metric::Cosine | Metric::ModifiedCosine) => {
+                unreachable!("representative index family must match metric")
+            }
+        }
+    }
 }
 
 #[cfg(test)]

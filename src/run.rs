@@ -11,22 +11,20 @@ use rayon::prelude::*;
 
 use crate::{
     checkpoint::{self, CheckpointBase, RunFingerprint},
-    cli::{Cli, Commands, RenderHeatmapArgs, ScanArgs},
+    cli::{Cli, Commands, RenderHeatmapArgs, RenderPathwayArtifactArgs, ScanArgs},
     data::load_records,
     distribution::{
         compare_distributions, histogram_sorted_distribution, summarize_sorted_distribution,
     },
-    model::{LoadedRecord, ScoreDistribution, SimilarityConfig},
+    model::{LoadedRecord, PEAK_COUNT_GRID_SIZE, ScoreDistribution, SimilarityConfig},
     neighbors::{SearchBatch, compute_neighbors},
     output::{GridArrays, OutputWriters},
     pathway::score_pathway_representatives,
+    pathway_artifacts::write_pathway_prediction_artifacts,
     progress::{ProgressTask, ScanProgress},
     spectra::{prepare_spectra, select_query_ids, select_reference_ids},
     visualize::write_heatmaps,
 };
-
-/// Maximum top-intensity peak count evaluated by every scan.
-const MAX_PEAK_COUNT: usize = 128;
 
 /// Dispatch parsed command-line arguments to the selected command.
 ///
@@ -39,6 +37,7 @@ pub fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Scan(args) => run_scan(args),
         Commands::RenderHeatmaps(args) => run_render_heatmaps(&args),
+        Commands::RenderPathwayArtifacts(args) => run_render_pathway_artifacts(&args),
     }
 }
 
@@ -48,6 +47,12 @@ fn run_render_heatmaps(args: &RenderHeatmapArgs) -> Result<()> {
     let arrays = read_grid_npz(&args.output_dir)?;
     let configs = read_grid_configs(&args.output_dir)?;
     write_heatmaps(&args.output_dir, &configs, &arrays, &progress)
+}
+
+/// Rebuild pathway prediction artifacts from an existing scan output directory.
+fn run_render_pathway_artifacts(args: &RenderPathwayArtifactArgs) -> Result<()> {
+    let progress = ScanProgress::new();
+    write_pathway_prediction_artifacts(&args.output_dir, &progress)
 }
 
 /// Read dense grid matrices from an existing `distribution_grid.npz` artifact.
@@ -141,7 +146,10 @@ fn run_scan(mut args: ScanArgs) -> Result<()> {
     let writer_progress = progress.spinner("opening output writers");
     let mut writers = OutputWriters::create(&args.output_dir)?;
     writer_progress.finish();
-    let total_peak_runs = args.similarity_configs.len().saturating_mul(MAX_PEAK_COUNT);
+    let total_peak_runs = args
+        .similarity_configs
+        .len()
+        .saturating_mul(PEAK_COUNT_GRID_SIZE);
     let scan_progress = progress.bar(
         u64::try_from(total_peak_runs).unwrap_or(u64::MAX),
         "scanning peak-count grid",
@@ -161,7 +169,8 @@ fn run_scan(mut args: ScanArgs) -> Result<()> {
     }
     scan_progress.finish();
 
-    writers.finish(&progress)
+    writers.finish(&progress)?;
+    write_pathway_prediction_artifacts(&args.output_dir, &progress)
 }
 
 /// Shared immutable inputs for one scan.
@@ -192,8 +201,8 @@ fn run_similarity_config(
     let fingerprint = inputs
         .checkpoint_base
         .fingerprint(inputs.args, config, &config_name);
-    let mut distributions = Vec::with_capacity(MAX_PEAK_COUNT);
-    for peak_count in 1..=MAX_PEAK_COUNT {
+    let mut distributions = Vec::with_capacity(PEAK_COUNT_GRID_SIZE);
+    for peak_count in 1..=PEAK_COUNT_GRID_SIZE {
         let distribution = run_peak_count(
             inputs,
             writers,
@@ -313,7 +322,7 @@ fn write_cached_distribution_outputs(
         histogram_sorted_distribution(inputs.args, config, peak_count, &distribution.scores)?;
     writers.write_histogram(&histogram)?;
 
-    if inputs.args.pathway_representatives_per_class > 0 && config.metric.is_cosine_family() {
+    if inputs.args.pathway_representatives_per_class > 0 {
         let spectra = prepare_spectra(
             inputs.progress,
             inputs.records,
@@ -351,7 +360,7 @@ fn write_adjacent_comparisons(
     distributions: &[ScoreDistribution],
 ) -> Result<()> {
     let adjacent_progress = inputs.progress.bar(
-        u64::try_from(MAX_PEAK_COUNT.saturating_sub(1)).unwrap_or(u64::MAX),
+        u64::try_from(PEAK_COUNT_GRID_SIZE.saturating_sub(1)).unwrap_or(u64::MAX),
         format!("comparing adjacent distributions for {config_name}"),
     );
     let comparisons = (0..distributions.len().saturating_sub(1))
@@ -383,7 +392,8 @@ fn write_grid_comparisons(
     distributions: &[ScoreDistribution],
 ) -> Result<()> {
     let grid_progress = inputs.progress.bar(
-        u64::try_from(MAX_PEAK_COUNT.saturating_mul(MAX_PEAK_COUNT)).unwrap_or(u64::MAX),
+        u64::try_from(PEAK_COUNT_GRID_SIZE.saturating_mul(PEAK_COUNT_GRID_SIZE))
+            .unwrap_or(u64::MAX),
         format!("comparing full distribution grid for {config_name}"),
     );
     let width = distributions.len();
@@ -524,7 +534,9 @@ mod tests {
         ])?;
         match cli.command {
             Commands::Scan(args) => Ok(args),
-            Commands::RenderHeatmaps(_args) => anyhow::bail!("expected scan command"),
+            Commands::RenderHeatmaps(_) | Commands::RenderPathwayArtifacts(_) => {
+                anyhow::bail!("expected scan command")
+            }
         }
     }
 
