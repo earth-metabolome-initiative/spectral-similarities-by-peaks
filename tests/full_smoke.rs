@@ -61,6 +61,50 @@ fn full_scan_smoke_test_produces_expected_artifacts() -> Result<(), Box<dyn Erro
     Ok(())
 }
 
+#[test]
+/// Shard scans can be finalized into the same artifact family as a local scan.
+fn shard_scan_finalize_smoke_test_produces_expected_artifacts() -> Result<(), Box<dyn Error>> {
+    let root = smoke_root()?;
+    let data_dir = root.join("data");
+    let output_dir = root.join("out");
+    fs::create_dir_all(&data_dir)?;
+
+    for shard_index in 0..128 {
+        let cli = smoke_single_config_shard_cli(&data_dir, &output_dir, shard_index)?;
+        run::run(cli)?;
+    }
+
+    let cli = smoke_single_config_finalize_cli(&data_dir, &output_dir)?;
+    run::run(cli)?;
+
+    assert_parquet_rows(&output_dir.join("distribution_summary.parquet"), 128)?;
+    assert_parquet_rows(&output_dir.join("distribution_histograms.parquet"), 384)?;
+    assert_parquet_rows(&output_dir.join("distribution_tests.parquet"), 127)?;
+    assert_parquet_rows(&output_dir.join("distribution_grid.parquet"), 16_384)?;
+    assert_parquet_rows(&output_dir.join("distribution_grid_configs.parquet"), 1)?;
+    assert_parquet_rows(&output_dir.join("pathway_scores.parquet"), 2_048)?;
+    assert_parquet_rows(&output_dir.join("pathway_predictions.parquet"), 512)?;
+    assert_parquet_nonempty(&output_dir.join("pathway_prediction_metrics.parquet"))?;
+    assert_parquet_rows(
+        &output_dir.join("pathway_prediction_distribution_grid.parquet"),
+        16_384,
+    )?;
+    assert_parquet_rows(
+        &output_dir.join("pathway_prediction_distribution_grid_configs.parquet"),
+        1,
+    )?;
+    assert_grid_npz_shapes_with_configs(&output_dir.join("distribution_grid.npz"), 1)?;
+    assert_pathway_grid_npz_shapes_with_configs(
+        &output_dir.join("pathway_prediction_distribution_grid.npz"),
+        1,
+    )?;
+    assert_single_config_heatmap_artifacts(&output_dir, "cosine_mz0.000_int1.000")?;
+    assert_single_config_pathway_prediction_artifacts(&output_dir, "cosine_mz0.000_int1.000")?;
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
 /// Build the deterministic synthetic scan command used by the full smoke test.
 fn smoke_scan_cli(data_dir: &Path, output_dir: &Path) -> Result<Cli, Box<dyn Error>> {
     Ok(Cli::try_parse_from([
@@ -129,6 +173,88 @@ fn smoke_scan_cli(data_dir: &Path, output_dir: &Path) -> Result<Cli, Box<dyn Err
     ])?)
 }
 
+/// Build one deterministic synthetic scan-shard command.
+fn smoke_single_config_shard_cli(
+    data_dir: &Path,
+    output_dir: &Path,
+    shard_index: usize,
+) -> Result<Cli, Box<dyn Error>> {
+    let shard_index = shard_index.to_string();
+    Ok(Cli::try_parse_from([
+        "spectral-similarities-by-peaks",
+        "scan-shard",
+        "--dataset",
+        "synthetic-smoke",
+        "--data-dir",
+        data_dir
+            .to_str()
+            .ok_or("temporary data directory path is not valid UTF-8")?,
+        "--output-dir",
+        output_dir
+            .to_str()
+            .ok_or("temporary output directory path is not valid UTF-8")?,
+        "--similarity-config",
+        "cosine:0.0:1.0",
+        "--shard-index",
+        shard_index.as_str(),
+        "--neighbors",
+        "2",
+        "--mz-tolerance",
+        "0.05",
+        "--histogram-bins",
+        "3",
+        "--pathway-representatives-per-class",
+        "1",
+        "--row-sample-size",
+        "4",
+        "--reference-sample-size",
+        "6",
+        "--max-spectra",
+        "8",
+        "--seed",
+        "42",
+    ])?)
+}
+
+/// Build the deterministic synthetic finalize-scan command for shard smoke tests.
+fn smoke_single_config_finalize_cli(
+    data_dir: &Path,
+    output_dir: &Path,
+) -> Result<Cli, Box<dyn Error>> {
+    Ok(Cli::try_parse_from([
+        "spectral-similarities-by-peaks",
+        "finalize-scan",
+        "--dataset",
+        "synthetic-smoke",
+        "--data-dir",
+        data_dir
+            .to_str()
+            .ok_or("temporary data directory path is not valid UTF-8")?,
+        "--output-dir",
+        output_dir
+            .to_str()
+            .ok_or("temporary output directory path is not valid UTF-8")?,
+        "--similarity-config",
+        "cosine:0.0:1.0",
+        "--neighbors",
+        "2",
+        "--mz-tolerance",
+        "0.05",
+        "--histogram-bins",
+        "3",
+        "--pathway-representatives-per-class",
+        "1",
+        "--row-sample-size",
+        "4",
+        "--reference-sample-size",
+        "6",
+        "--max-spectra",
+        "8",
+        "--seed",
+        "42",
+    ])?)
+}
+
 #[test]
 /// The top-level command help is generated successfully.
 fn top_level_help_is_available() -> Result<(), Box<dyn Error>> {
@@ -142,6 +268,14 @@ fn top_level_help_is_available() -> Result<(), Box<dyn Error>> {
         "unexpected help output: {stdout}"
     );
     assert!(stdout.contains("scan"), "missing scan command: {stdout}");
+    assert!(
+        stdout.contains("scan-shard"),
+        "missing scan-shard command: {stdout}"
+    );
+    assert!(
+        stdout.contains("finalize-scan"),
+        "missing finalize-scan command: {stdout}"
+    );
     assert!(
         stdout.contains("render-pathway-artifacts"),
         "missing pathway artifact command: {stdout}"
@@ -174,6 +308,50 @@ fn scan_help_is_available() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+/// The scan-shard subcommand help exposes shard selectors.
+fn scan_shard_help_is_available() -> Result<(), Box<dyn Error>> {
+    let Err(error) =
+        Cli::try_parse_from(["spectral-similarities-by-peaks", "scan-shard", "--help"])
+    else {
+        return Err(std::io::Error::other("scan-shard help should short-circuit parsing").into());
+    };
+    assert_eq!(error.kind(), ErrorKind::DisplayHelp);
+    let stdout = error.to_string();
+    assert!(
+        stdout.contains("--shard-index"),
+        "missing shard-index flag: {stdout}"
+    );
+    assert!(
+        stdout.contains("--peak-count"),
+        "missing peak-count flag: {stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+/// The finalize-scan subcommand help is generated successfully.
+fn finalize_scan_help_is_available() -> Result<(), Box<dyn Error>> {
+    let Err(error) =
+        Cli::try_parse_from(["spectral-similarities-by-peaks", "finalize-scan", "--help"])
+    else {
+        return Err(
+            std::io::Error::other("finalize-scan help should short-circuit parsing").into(),
+        );
+    };
+    assert_eq!(error.kind(), ErrorKind::DisplayHelp);
+    let stdout = error.to_string();
+    assert!(
+        stdout.contains("--dataset"),
+        "missing dataset flag: {stdout}"
+    );
+    assert!(
+        stdout.contains("--similarity-config"),
+        "missing config flag: {stdout}"
+    );
+    Ok(())
+}
+
+#[test]
 /// Pathway artifact rendering reports missing prediction inputs.
 fn render_pathway_artifacts_requires_predictions() -> Result<(), Box<dyn Error>> {
     let root = smoke_root()?;
@@ -194,6 +372,28 @@ fn render_pathway_artifacts_requires_predictions() -> Result<(), Box<dyn Error>>
     let message = error.to_string();
     assert!(
         message.contains("pathway_predictions.parquet"),
+        "unexpected error: {message}"
+    );
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+/// Finalization reports missing distribution shards before writing final artifacts.
+fn finalize_scan_requires_distribution_shards() -> Result<(), Box<dyn Error>> {
+    let root = smoke_root()?;
+    let data_dir = root.join("data");
+    let output_dir = root.join("out");
+    fs::create_dir_all(&data_dir)?;
+
+    let cli = smoke_single_config_finalize_cli(&data_dir, &output_dir)?;
+    let Err(error) = run::run(cli) else {
+        return Err(std::io::Error::other("missing distribution shards should fail").into());
+    };
+    let message = error.to_string();
+    assert!(
+        message.contains("missing distribution checkpoint shards"),
         "unexpected error: {message}"
     );
 
@@ -262,8 +462,28 @@ fn assert_parquet_rows(path: &Path, expected_rows: usize) -> Result<(), Box<dyn 
     Ok(())
 }
 
+/// Assert that a Parquet file exists and contains at least one row.
+fn assert_parquet_nonempty(path: &Path) -> Result<(), Box<dyn Error>> {
+    let metadata = fs::metadata(path)?;
+    assert!(metadata.len() > 0, "{} is empty", path.display());
+
+    let file = fs::File::open(path)?;
+    let reader = SerializedFileReader::new(file)?;
+    let rows = reader.metadata().file_metadata().num_rows();
+    assert!(rows > 0, "{} has no rows", path.display());
+    Ok(())
+}
+
 /// Assert that the dense full-grid `NumPy` artifact has the expected axes.
 fn assert_grid_npz_shapes(path: &Path) -> Result<(), Box<dyn Error>> {
+    assert_grid_npz_shapes_with_configs(path, 18)
+}
+
+/// Assert that the dense full-grid `NumPy` artifact has the expected config axis.
+fn assert_grid_npz_shapes_with_configs(
+    path: &Path,
+    expected_configs: usize,
+) -> Result<(), Box<dyn Error>> {
     let file = fs::File::open(path)?;
     let mut reader = NpzReader::new(file)?;
     let peak_counts: Array1<u64> = reader.by_name("peak_counts.npy")?;
@@ -273,15 +493,23 @@ fn assert_grid_npz_shapes(path: &Path) -> Result<(), Box<dyn Error>> {
     let mean_delta: Array3<f64> = reader.by_name("mean_delta.npy")?;
 
     assert_eq!(peak_counts.len(), 128);
-    assert_eq!(ks_statistic.shape(), &[18, 128, 128]);
-    assert_eq!(ks_pvalue.shape(), &[18, 128, 128]);
-    assert_eq!(wasserstein.shape(), &[18, 128, 128]);
-    assert_eq!(mean_delta.shape(), &[18, 128, 128]);
+    assert_eq!(ks_statistic.shape(), &[expected_configs, 128, 128]);
+    assert_eq!(ks_pvalue.shape(), &[expected_configs, 128, 128]);
+    assert_eq!(wasserstein.shape(), &[expected_configs, 128, 128]);
+    assert_eq!(mean_delta.shape(), &[expected_configs, 128, 128]);
     Ok(())
 }
 
 /// Assert that the pathway prediction dense-grid artifact has the expected axes.
 fn assert_pathway_grid_npz_shapes(path: &Path) -> Result<(), Box<dyn Error>> {
+    assert_pathway_grid_npz_shapes_with_configs(path, 18)
+}
+
+/// Assert that the pathway prediction dense-grid artifact has the expected config axis.
+fn assert_pathway_grid_npz_shapes_with_configs(
+    path: &Path,
+    expected_configs: usize,
+) -> Result<(), Box<dyn Error>> {
     let file = fs::File::open(path)?;
     let mut reader = NpzReader::new(file)?;
     let peak_counts: Array1<u64> = reader.by_name("peak_counts.npy")?;
@@ -290,9 +518,9 @@ fn assert_pathway_grid_npz_shapes(path: &Path) -> Result<(), Box<dyn Error>> {
     let hellinger: Array3<f64> = reader.by_name("hellinger_distance.npy")?;
 
     assert_eq!(peak_counts.len(), 128);
-    assert_eq!(total_variation.shape(), &[18, 128, 128]);
-    assert_eq!(jensen_shannon.shape(), &[18, 128, 128]);
-    assert_eq!(hellinger.shape(), &[18, 128, 128]);
+    assert_eq!(total_variation.shape(), &[expected_configs, 128, 128]);
+    assert_eq!(jensen_shannon.shape(), &[expected_configs, 128, 128]);
+    assert_eq!(hellinger.shape(), &[expected_configs, 128, 128]);
     Ok(())
 }
 
@@ -328,6 +556,24 @@ fn assert_heatmap_artifacts(output_dir: &Path) -> Result<(), Box<dyn Error>> {
             assert_svg_artifact(&stem.with_extension("svg"))?;
             assert_png_artifact(&stem.with_extension("png"))?;
         }
+    }
+    Ok(())
+}
+
+/// Assert that one config's distribution heatmaps were written in SVG and PNG form.
+fn assert_single_config_heatmap_artifacts(
+    output_dir: &Path,
+    config: &str,
+) -> Result<(), Box<dyn Error>> {
+    for metric in [
+        "mean_delta",
+        "ks_statistic",
+        "ks_pvalue_asymptotic",
+        "wasserstein_1d",
+    ] {
+        let stem = output_dir.join("heatmaps").join(config).join(metric);
+        assert_svg_artifact(&stem.with_extension("svg"))?;
+        assert_png_artifact(&stem.with_extension("png"))?;
     }
     Ok(())
 }
@@ -374,6 +620,34 @@ fn assert_pathway_prediction_artifacts(output_dir: &Path) -> Result<(), Box<dyn 
             assert_svg_artifact(&stem.with_extension("svg"))?;
             assert_png_artifact(&stem.with_extension("png"))?;
         }
+    }
+    Ok(())
+}
+
+/// Assert that one config's pathway prediction plots were written.
+fn assert_single_config_pathway_prediction_artifacts(
+    output_dir: &Path,
+    config: &str,
+) -> Result<(), Box<dyn Error>> {
+    for metric in [
+        "total_variation",
+        "jensen_shannon_distance",
+        "hellinger_distance",
+    ] {
+        let stem = output_dir
+            .join("pathway_prediction_heatmaps")
+            .join(config)
+            .join(metric);
+        assert_svg_artifact(&stem.with_extension("svg"))?;
+        assert_png_artifact(&stem.with_extension("png"))?;
+    }
+    for metric in ["accuracy", "mcc"] {
+        let stem = output_dir
+            .join("pathway_prediction_plots")
+            .join(config)
+            .join(metric);
+        assert_svg_artifact(&stem.with_extension("svg"))?;
+        assert_png_artifact(&stem.with_extension("png"))?;
     }
     Ok(())
 }

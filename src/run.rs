@@ -4,6 +4,7 @@ use std::{fs, path::Path};
 
 use anyhow::{Context, Result, bail};
 use arrow_array::{RecordBatch, StringArray, UInt64Array};
+use mass_spectrometry::prelude::GenericSpectrum;
 use ndarray::{Array1, Array3};
 use ndarray_npy::NpzReader;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -11,14 +12,20 @@ use rayon::prelude::*;
 
 use crate::{
     checkpoint::{self, CheckpointBase, RunFingerprint},
-    cli::{Cli, Commands, RenderHeatmapArgs, RenderPathwayArtifactArgs, ScanArgs},
+    cli::{
+        Cli, Commands, FinalizeScanArgs, RenderHeatmapArgs, RenderPathwayArtifactArgs, ScanArgs,
+        ScanShardArgs,
+    },
     data::load_records,
     distribution::{
         compare_distributions, histogram_sorted_distribution, summarize_sorted_distribution,
     },
-    model::{LoadedRecord, PEAK_COUNT_GRID_SIZE, ScoreDistribution, SimilarityConfig},
+    model::{
+        DistributionSummary, LoadedRecord, PEAK_COUNT_GRID_SIZE, ScoreDistribution,
+        SimilarityConfig,
+    },
     neighbors::{SearchBatch, compute_neighbors},
-    output::{GridArrays, OutputWriters},
+    output::{self, GridArrays, OutputWriters},
     pathway::{pathway_labels, score_pathway_representatives},
     pathway_artifacts::{
         write_existing_pathway_prediction_artifacts, write_pathway_prediction_artifacts,
@@ -38,6 +45,8 @@ use crate::{
 pub fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Scan(args) => run_scan(args),
+        Commands::ScanShard(args) => run_scan_shard(args),
+        Commands::FinalizeScan(args) => run_finalize_scan(args),
         Commands::RenderHeatmaps(args) => run_render_heatmaps(&args),
         Commands::RenderPathwayArtifacts(args) => run_render_pathway_artifacts(&args),
     }
@@ -132,20 +141,7 @@ fn run_scan(mut args: ScanArgs) -> Result<()> {
         .with_context(|| format!("creating {}", args.output_dir.display()))?;
 
     let progress = ScanProgress::new();
-    let load_progress = progress.spinner(format!("loading {} records", args.dataset.as_str()));
-    let mut records = load_records(&args)?;
-    load_progress.finish();
-    if let Some(max_spectra) = args.max_spectra {
-        records.truncate(max_spectra.min(records.len()));
-    }
-    if records.is_empty() {
-        bail!("no spectra loaded");
-    }
-    ensure_pathway_labels_available(&args, &records)?;
-
-    let query_ids = select_query_ids(records.len(), args.row_sample_size, args.seed);
-    let reference_ids = select_reference_ids(records.len(), args.reference_sample_size, args.seed);
-    let checkpoint_base = CheckpointBase::new(&args, &records, &query_ids, &reference_ids);
+    let data = load_scan_data(&args, &progress)?;
     let writer_progress = progress.spinner("opening output writers");
     let mut writers = OutputWriters::create(&args.output_dir)?;
     writer_progress.finish();
@@ -161,10 +157,10 @@ fn run_scan(mut args: ScanArgs) -> Result<()> {
     let inputs = ScanInputs {
         args: &args,
         progress: &progress,
-        records: &records,
-        query_ids: &query_ids,
-        reference_ids: &reference_ids,
-        checkpoint_base: &checkpoint_base,
+        records: &data.records,
+        query_ids: &data.query_ids,
+        reference_ids: &data.reference_ids,
+        checkpoint_base: &data.checkpoint_base,
         scan_progress: &scan_progress,
     };
     for config in &args.similarity_configs {
@@ -174,6 +170,255 @@ fn run_scan(mut args: ScanArgs) -> Result<()> {
 
     writers.finish(&progress)?;
     write_pathway_prediction_artifacts(&args.output_dir, &progress)
+}
+
+/// Loaded dataset state shared by local scans, shard jobs, and finalization.
+struct ScanData {
+    /// Loaded spectrum records after optional truncation.
+    records: Vec<LoadedRecord>,
+    /// Deterministically selected query row ids.
+    query_ids: Vec<usize>,
+    /// Deterministically selected fixed reference row ids.
+    reference_ids: Vec<usize>,
+    /// Scan-level checkpoint fingerprint base.
+    checkpoint_base: CheckpointBase,
+}
+
+/// Load records and derive deterministic sampling state for a scan command.
+fn load_scan_data(args: &ScanArgs, progress: &ScanProgress) -> Result<ScanData> {
+    let load_progress = progress.spinner(format!("loading {} records", args.dataset.as_str()));
+    let mut records = load_records(args)?;
+    load_progress.finish();
+    if let Some(max_spectra) = args.max_spectra {
+        records.truncate(max_spectra.min(records.len()));
+    }
+    if records.is_empty() {
+        bail!("no spectra loaded");
+    }
+    ensure_pathway_labels_available(args, &records)?;
+
+    let query_ids = select_query_ids(records.len(), args.row_sample_size, args.seed);
+    let reference_ids = select_reference_ids(records.len(), args.reference_sample_size, args.seed);
+    let checkpoint_base = CheckpointBase::new(args, &records, &query_ids, &reference_ids);
+    Ok(ScanData {
+        records,
+        query_ids,
+        reference_ids,
+        checkpoint_base,
+    })
+}
+
+/// Execute one restartable score-distribution shard.
+fn run_scan_shard(mut args: ScanShardArgs) -> Result<()> {
+    args.scan.validate()?;
+    let assignment = select_shard_assignment(&args)?;
+    fs::create_dir_all(&args.scan.output_dir)
+        .with_context(|| format!("creating {}", args.scan.output_dir.display()))?;
+
+    let progress = ScanProgress::new();
+    let data = load_scan_data(&args.scan, &progress)?;
+    let scan_progress = progress.bar(
+        1,
+        format!(
+            "scanning shard {} config {} top {}",
+            assignment.shard_index, assignment.config_index, assignment.peak_count
+        ),
+    );
+    let inputs = ScanInputs {
+        args: &args.scan,
+        progress: &progress,
+        records: &data.records,
+        query_ids: &data.query_ids,
+        reference_ids: &data.reference_ids,
+        checkpoint_base: &data.checkpoint_base,
+        scan_progress: &scan_progress,
+    };
+    let config_name = assignment.config.name();
+    let fingerprint =
+        inputs
+            .checkpoint_base
+            .fingerprint(inputs.args, &assignment.config, &config_name);
+    run_peak_count_shard(
+        &inputs,
+        &assignment.config,
+        &config_name,
+        &fingerprint,
+        assignment.peak_count,
+    )?;
+    scan_progress.inc(1);
+    scan_progress.finish();
+    Ok(())
+}
+
+/// Finalize global artifacts from completed shard checkpoints.
+fn run_finalize_scan(mut args: FinalizeScanArgs) -> Result<()> {
+    args.scan.validate()?;
+    fs::create_dir_all(&args.scan.output_dir)
+        .with_context(|| format!("creating {}", args.scan.output_dir.display()))?;
+    ensure_expected_distribution_checkpoint_paths(&args.scan)?;
+    ensure_expected_pathway_shard_paths(&args.scan)?;
+
+    let progress = ScanProgress::new();
+    let data = load_scan_data(&args.scan, &progress)?;
+    let writer_progress = progress.spinner("opening output writers");
+    let mut writers = OutputWriters::create(&args.scan.output_dir)?;
+    writer_progress.finish();
+    let scan_progress = progress.bar(
+        u64::try_from(
+            args.scan
+                .similarity_configs
+                .len()
+                .saturating_mul(PEAK_COUNT_GRID_SIZE),
+        )
+        .unwrap_or(u64::MAX),
+        "finalizing peak-count grid",
+    );
+    let inputs = ScanInputs {
+        args: &args.scan,
+        progress: &progress,
+        records: &data.records,
+        query_ids: &data.query_ids,
+        reference_ids: &data.reference_ids,
+        checkpoint_base: &data.checkpoint_base,
+        scan_progress: &scan_progress,
+    };
+
+    for config in &args.scan.similarity_configs {
+        finalize_similarity_config(&inputs, &mut writers, config)?;
+    }
+    scan_progress.finish();
+
+    writers.finish(&progress)?;
+    write_pathway_prediction_artifacts(&args.scan.output_dir, &progress)
+}
+
+/// One selected shard from the two-dimensional config/peak grid.
+struct ShardAssignment {
+    /// Similarity configuration to evaluate.
+    config: SimilarityConfig,
+    /// One-based retained peak count to evaluate.
+    peak_count: usize,
+    /// Zero-based similarity configuration index.
+    config_index: usize,
+    /// Zero-based shard index over the full selected grid.
+    shard_index: usize,
+}
+
+/// Resolve explicit or indexed shard arguments to one config/peak assignment.
+fn select_shard_assignment(args: &ScanShardArgs) -> Result<ShardAssignment> {
+    match (args.peak_count, args.shard_index) {
+        (Some(_), Some(_)) => {
+            bail!("scan-shard accepts either --peak-count or --shard-index, not both");
+        }
+        (Some(peak_count), None) => {
+            validate_peak_count(peak_count)?;
+            if args.scan.similarity_configs.len() != 1 {
+                bail!(
+                    "scan-shard with --peak-count requires exactly one --similarity-config, got {}",
+                    args.scan.similarity_configs.len()
+                );
+            }
+            Ok(ShardAssignment {
+                config: args.scan.similarity_configs[0].clone(),
+                peak_count,
+                config_index: 0,
+                shard_index: peak_count - 1,
+            })
+        }
+        (None, Some(shard_index)) => {
+            let configs = args.scan.similarity_configs.len();
+            let total_shards = configs.saturating_mul(PEAK_COUNT_GRID_SIZE);
+            if shard_index >= total_shards {
+                bail!(
+                    "--shard-index {shard_index} is outside the selected grid of {total_shards} shards"
+                );
+            }
+            let config_index = shard_index / PEAK_COUNT_GRID_SIZE;
+            let peak_count = shard_index % PEAK_COUNT_GRID_SIZE + 1;
+            Ok(ShardAssignment {
+                config: args.scan.similarity_configs[config_index].clone(),
+                peak_count,
+                config_index,
+                shard_index,
+            })
+        }
+        (None, None) => {
+            bail!("scan-shard requires either --peak-count or --shard-index");
+        }
+    }
+}
+
+/// Validate one retained peak count from the fixed experiment grid.
+fn validate_peak_count(peak_count: usize) -> Result<()> {
+    if !(1..=PEAK_COUNT_GRID_SIZE).contains(&peak_count) {
+        bail!("--peak-count must be in 1..={PEAK_COUNT_GRID_SIZE}, got {peak_count}");
+    }
+    Ok(())
+}
+
+/// Fail early when finalization is missing expected distribution checkpoint files.
+fn ensure_expected_distribution_checkpoint_paths(args: &ScanArgs) -> Result<()> {
+    let missing = args
+        .similarity_configs
+        .iter()
+        .flat_map(|config| {
+            let config_name = config.name();
+            let checked_config_name = config_name.clone();
+            (1..=PEAK_COUNT_GRID_SIZE)
+                .filter(move |&peak_count| {
+                    !checkpoint::checkpoint_exists(
+                        &args.output_dir,
+                        &checked_config_name,
+                        peak_count,
+                    )
+                })
+                .map(move |peak_count| format!("{config_name}/top_{peak_count:03}.bincode.zst"))
+        })
+        .take(20)
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        bail!(
+            "missing distribution checkpoint shards under {}: {}{}",
+            args.output_dir.join("distributions").display(),
+            missing.join(", "),
+            if missing.len() == 20 { ", ..." } else { "" }
+        );
+    }
+    Ok(())
+}
+
+/// Fail early when finalization is missing expected pathway shard files.
+fn ensure_expected_pathway_shard_paths(args: &ScanArgs) -> Result<()> {
+    if args.pathway_representatives_per_class == 0 {
+        return Ok(());
+    }
+    let missing = args
+        .similarity_configs
+        .iter()
+        .flat_map(|config| {
+            let config_name = config.name();
+            let checked_config_name = config_name.clone();
+            (1..=PEAK_COUNT_GRID_SIZE)
+                .filter(move |&peak_count| {
+                    !output::pathway_shard_exists(
+                        &args.output_dir,
+                        &checked_config_name,
+                        peak_count,
+                    )
+                })
+                .map(move |peak_count| format!("{config_name}/top_{peak_count:03}"))
+        })
+        .take(20)
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        bail!(
+            "missing pathway prediction shards under {}: {}{}",
+            args.output_dir.join("pathway_shards").display(),
+            missing.join(", "),
+            if missing.len() == 20 { ", ..." } else { "" }
+        );
+    }
+    Ok(())
 }
 
 /// Ensure pathway scoring was not requested on records without pathway labels.
@@ -240,6 +485,128 @@ fn run_similarity_config(
     write_grid_comparisons(inputs, writers, config, &config_name, &distributions)
 }
 
+/// Load completed checkpoints for one config and write final artifacts.
+fn finalize_similarity_config(
+    inputs: &ScanInputs<'_>,
+    writers: &mut OutputWriters,
+    config: &SimilarityConfig,
+) -> Result<()> {
+    let config_name = config.name();
+    let fingerprint = inputs
+        .checkpoint_base
+        .fingerprint(inputs.args, config, &config_name);
+    let mut distributions = Vec::with_capacity(PEAK_COUNT_GRID_SIZE);
+    for peak_count in 1..=PEAK_COUNT_GRID_SIZE {
+        inputs
+            .scan_progress
+            .set_message(format!("finalizing {config_name} top {peak_count} peaks"));
+        let distribution = checkpoint::load_distribution(
+            &inputs.args.output_dir,
+            inputs.args.dataset.as_str(),
+            &config_name,
+            config.metric_label(),
+            peak_count,
+            &fingerprint,
+        )
+        .with_context(|| {
+            format!(
+                "missing or invalid checkpoint for {config_name} top {peak_count} peaks at {}",
+                checkpoint::checkpoint_path(&inputs.args.output_dir, &config_name, peak_count)
+                    .display()
+            )
+        })?;
+        let summary =
+            summarize_sorted_distribution(inputs.args, config, peak_count, &distribution.scores)?;
+        let histogram =
+            histogram_sorted_distribution(inputs.args, config, peak_count, &distribution.scores)?;
+        writers.write_summary(&summary)?;
+        writers.write_histogram(&histogram)?;
+        if inputs.args.pathway_representatives_per_class > 0 {
+            writers.write_pathway_shard(&inputs.args.output_dir, &config_name, peak_count)?;
+        }
+        distributions.push(distribution);
+        inputs.scan_progress.inc(1);
+    }
+
+    write_adjacent_comparisons(inputs, writers, config, &config_name, &distributions)?;
+    write_grid_comparisons(inputs, writers, config, &config_name, &distributions)
+}
+
+/// Run one retained-peak count as a shard-safe checkpoint-only computation.
+fn run_peak_count_shard(
+    inputs: &ScanInputs<'_>,
+    config: &SimilarityConfig,
+    config_name: &str,
+    fingerprint: &RunFingerprint,
+    peak_count: usize,
+) -> Result<()> {
+    inputs
+        .scan_progress
+        .set_message(format!("scanning {config_name} top {peak_count} peaks"));
+    let cached_distribution = checkpoint::load_distribution(
+        &inputs.args.output_dir,
+        inputs.args.dataset.as_str(),
+        config_name,
+        config.metric_label(),
+        peak_count,
+        fingerprint,
+    );
+    let needs_pathway_shard = inputs.args.pathway_representatives_per_class > 0
+        && !output::pathway_shard_exists(&inputs.args.output_dir, config_name, peak_count);
+    if cached_distribution.is_some() && !needs_pathway_shard {
+        inputs
+            .scan_progress
+            .set_message(format!("using cached {config_name} top {peak_count} peaks"));
+        return Ok(());
+    }
+
+    let spectra = prepare_spectra(
+        inputs.progress,
+        inputs.records,
+        peak_count,
+        inputs.args.mz_tolerance,
+        !inputs.args.no_merge_close_peaks,
+    )
+    .with_context(|| format!("preparing spectra for top {peak_count} peaks"))?;
+
+    if cached_distribution.is_none() {
+        let (distribution, _summary) =
+            compute_score_distribution(inputs, config, config_name, peak_count, &spectra)?;
+        checkpoint::store_distribution(
+            &inputs.args.output_dir,
+            inputs.args.dataset.as_str(),
+            config_name,
+            config.metric_label(),
+            &distribution,
+            fingerprint,
+        )
+        .with_context(|| {
+            format!("storing {config_name} top {peak_count} distribution checkpoint")
+        })?;
+    }
+
+    if needs_pathway_shard {
+        if let Some((pathway_scores, pathway_predictions)) = score_pathway_representatives(
+            inputs.args,
+            inputs.progress,
+            config,
+            peak_count,
+            inputs.records,
+            &spectra,
+            inputs.query_ids,
+        )? {
+            output::write_pathway_shard(
+                &inputs.args.output_dir,
+                config_name,
+                peak_count,
+                &pathway_scores,
+                &pathway_predictions,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// Run one retained-peak count for one similarity config.
 fn run_peak_count(
     inputs: &ScanInputs<'_>,
@@ -278,27 +645,8 @@ fn run_peak_count(
     )
     .with_context(|| format!("preparing spectra for top {peak_count} peaks"))?;
 
-    let hits = compute_neighbors(&SearchBatch {
-        args: inputs.args,
-        progress: inputs.progress,
-        config,
-        peak_count,
-        records: inputs.records,
-        spectra: &spectra,
-        query_ids: inputs.query_ids,
-        reference_ids: inputs.reference_ids,
-    })
-    .with_context(|| format!("computing {config_name} neighbors for top {peak_count} peaks"))?;
-
-    let mut scores = hits.into_iter().map(|hit| hit.score).collect::<Vec<_>>();
-    scores.par_sort_by(f64::total_cmp);
-
-    let summary = summarize_sorted_distribution(inputs.args, config, peak_count, &scores)?;
-    let distribution = ScoreDistribution {
-        peak_count,
-        scores,
-        mean: summary.mean,
-    };
+    let (distribution, summary) =
+        compute_score_distribution(inputs, config, config_name, peak_count, &spectra)?;
     checkpoint::store_distribution(
         &inputs.args.output_dir,
         inputs.args.dataset.as_str(),
@@ -327,6 +675,38 @@ fn run_peak_count(
 
     writers.write_summary(&summary)?;
     Ok(distribution)
+}
+
+/// Compute one sorted score distribution from prepared spectra.
+fn compute_score_distribution(
+    inputs: &ScanInputs<'_>,
+    config: &SimilarityConfig,
+    config_name: &str,
+    peak_count: usize,
+    spectra: &[GenericSpectrum],
+) -> Result<(ScoreDistribution, DistributionSummary)> {
+    let hits = compute_neighbors(&SearchBatch {
+        args: inputs.args,
+        progress: inputs.progress,
+        config,
+        peak_count,
+        records: inputs.records,
+        spectra,
+        query_ids: inputs.query_ids,
+        reference_ids: inputs.reference_ids,
+    })
+    .with_context(|| format!("computing {config_name} neighbors for top {peak_count} peaks"))?;
+
+    let mut scores = hits.into_iter().map(|hit| hit.score).collect::<Vec<_>>();
+    scores.par_sort_by(f64::total_cmp);
+
+    let summary = summarize_sorted_distribution(inputs.args, config, peak_count, &scores)?;
+    let distribution = ScoreDistribution {
+        peak_count,
+        scores,
+        mean: summary.mean,
+    };
+    Ok((distribution, summary))
 }
 
 /// Write regenerated artifacts for a cached score distribution.
@@ -461,7 +841,7 @@ mod tests {
         spectra::{select_query_ids, select_reference_ids},
     };
 
-    use super::{ensure_pathway_labels_available, run_scan};
+    use super::{ensure_pathway_labels_available, run_scan, select_shard_assignment};
 
     #[test]
     /// A valid cached distribution is reused while missing peak counts are computed.
@@ -550,6 +930,78 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    /// Shard indexes map row-major over configs and one-based peak counts.
+    fn shard_index_mapping_matches_config_peak_grid() -> Result<()> {
+        let root = temp_root("shard-index")?;
+        let data_dir = root.join("data");
+        let output_dir = root.join("out");
+        fs::create_dir_all(&data_dir)?;
+
+        let first = select_shard_assignment(&scan_shard_args(&data_dir, &output_dir, "0")?)?;
+        assert_eq!(first.config.name(), "cosine_mz0.000_int1.000");
+        assert_eq!(first.config_index, 0);
+        assert_eq!(first.peak_count, 1);
+
+        let last_first_config =
+            select_shard_assignment(&scan_shard_args(&data_dir, &output_dir, "127")?)?;
+        assert_eq!(last_first_config.config.name(), "cosine_mz0.000_int1.000");
+        assert_eq!(last_first_config.config_index, 0);
+        assert_eq!(last_first_config.peak_count, 128);
+
+        let first_second_config =
+            select_shard_assignment(&scan_shard_args(&data_dir, &output_dir, "128")?)?;
+        assert_eq!(
+            first_second_config.config.name(),
+            "modified_cosine_mz0.000_int1.000"
+        );
+        assert_eq!(first_second_config.config_index, 1);
+        assert_eq!(first_second_config.peak_count, 1);
+
+        let last = select_shard_assignment(&scan_shard_args(&data_dir, &output_dir, "2303")?)?;
+        assert_eq!(
+            last.config.name(),
+            "modified_entropy_mz0.000_int1.000_weightedfalse"
+        );
+        assert_eq!(last.config_index, 17);
+        assert_eq!(last.peak_count, 128);
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    /// Explicit scan shards validate peak count and config cardinality.
+    fn explicit_scan_shard_requires_one_config_and_valid_peak_count() -> Result<()> {
+        let root = temp_root("explicit-shard")?;
+        let data_dir = root.join("data");
+        let output_dir = root.join("out");
+        fs::create_dir_all(&data_dir)?;
+
+        let invalid_peak = explicit_scan_shard_args(&data_dir, &output_dir, "0", false)?;
+        let Err(error) = select_shard_assignment(&invalid_peak) else {
+            anyhow::bail!("invalid peak count should fail");
+        };
+        assert!(
+            error.to_string().contains("--peak-count must be in"),
+            "unexpected error: {error}"
+        );
+
+        let multiple_configs = explicit_scan_shard_args(&data_dir, &output_dir, "1", true)?;
+        let Err(error) = select_shard_assignment(&multiple_configs) else {
+            anyhow::bail!("multiple configs should fail");
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("exactly one --similarity-config"),
+            "unexpected error: {error}"
+        );
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
     /// Parse the synthetic scan arguments used by the resume test.
     fn scan_args(data_dir: &Path, output_dir: &Path) -> Result<crate::cli::ScanArgs> {
         let cli = Cli::try_parse_from([
@@ -584,9 +1036,81 @@ mod tests {
         ])?;
         match cli.command {
             Commands::Scan(args) => Ok(args),
-            Commands::RenderHeatmaps(_) | Commands::RenderPathwayArtifacts(_) => {
+            Commands::ScanShard(_)
+            | Commands::FinalizeScan(_)
+            | Commands::RenderHeatmaps(_)
+            | Commands::RenderPathwayArtifacts(_) => {
                 anyhow::bail!("expected scan command")
             }
+        }
+    }
+
+    /// Parse scan-shard arguments using the default similarity config grid.
+    fn scan_shard_args(
+        data_dir: &Path,
+        output_dir: &Path,
+        shard_index: &str,
+    ) -> Result<crate::cli::ScanShardArgs> {
+        let cli = Cli::try_parse_from([
+            "spectral-similarities-by-peaks",
+            "scan-shard",
+            "--dataset",
+            "synthetic-smoke",
+            "--data-dir",
+            data_dir
+                .to_str()
+                .context("temporary data path is not valid UTF-8")?,
+            "--output-dir",
+            output_dir
+                .to_str()
+                .context("temporary output path is not valid UTF-8")?,
+            "--shard-index",
+            shard_index,
+        ])?;
+        match cli.command {
+            Commands::ScanShard(args) => Ok(args),
+            Commands::Scan(_)
+            | Commands::FinalizeScan(_)
+            | Commands::RenderHeatmaps(_)
+            | Commands::RenderPathwayArtifacts(_) => anyhow::bail!("expected scan-shard command"),
+        }
+    }
+
+    /// Parse explicit scan-shard arguments for validation tests.
+    fn explicit_scan_shard_args(
+        data_dir: &Path,
+        output_dir: &Path,
+        peak_count: &str,
+        include_second_config: bool,
+    ) -> Result<crate::cli::ScanShardArgs> {
+        let mut args = vec![
+            "spectral-similarities-by-peaks",
+            "scan-shard",
+            "--dataset",
+            "synthetic-smoke",
+            "--data-dir",
+            data_dir
+                .to_str()
+                .context("temporary data path is not valid UTF-8")?,
+            "--output-dir",
+            output_dir
+                .to_str()
+                .context("temporary output path is not valid UTF-8")?,
+            "--similarity-config",
+            "cosine:0.0:1.0",
+            "--peak-count",
+            peak_count,
+        ];
+        if include_second_config {
+            args.extend(["--similarity-config", "entropy:0.0:1.0:false"]);
+        }
+        let cli = Cli::try_parse_from(args)?;
+        match cli.command {
+            Commands::ScanShard(args) => Ok(args),
+            Commands::Scan(_)
+            | Commands::FinalizeScan(_)
+            | Commands::RenderHeatmaps(_)
+            | Commands::RenderPathwayArtifacts(_) => anyhow::bail!("expected scan-shard command"),
         }
     }
 

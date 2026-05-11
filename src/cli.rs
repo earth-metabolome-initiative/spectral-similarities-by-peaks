@@ -43,6 +43,10 @@ pub struct Cli {
 pub enum Commands {
     /// Compute top-neighbor similarity distributions across peak cutoffs.
     Scan(ScanArgs),
+    /// Compute one restartable score-distribution shard.
+    ScanShard(ScanShardArgs),
+    /// Build final artifacts from completed distribution shards.
+    FinalizeScan(FinalizeScanArgs),
     /// Re-render heatmaps from an existing scan output directory.
     RenderHeatmaps(RenderHeatmapArgs),
     /// Rebuild pathway prediction summaries and plots from an existing scan.
@@ -104,6 +108,28 @@ pub struct ScanArgs {
     /// Keep close peaks instead of merging them before indexing.
     #[arg(long, default_value_t = false)]
     pub no_merge_close_peaks: bool,
+}
+
+#[derive(Debug, Parser)]
+/// Arguments for the `scan-shard` subcommand.
+pub struct ScanShardArgs {
+    /// Shared scan configuration.
+    #[command(flatten)]
+    pub scan: ScanArgs,
+    /// One-based retained peak count to compute in explicit shard mode.
+    #[arg(long)]
+    pub peak_count: Option<usize>,
+    /// Zero-based shard index over `similarity_config x peak_count`.
+    #[arg(long)]
+    pub shard_index: Option<usize>,
+}
+
+#[derive(Debug, Parser)]
+/// Arguments for the `finalize-scan` subcommand.
+pub struct FinalizeScanArgs {
+    /// Shared scan configuration.
+    #[command(flatten)]
+    pub scan: ScanArgs,
 }
 
 #[derive(Debug, Parser)]

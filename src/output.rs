@@ -2,6 +2,7 @@
 
 use std::{
     fs,
+    io::ErrorKind,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -11,7 +12,7 @@ use arrow_array::{ArrayRef, BooleanArray, Float64Array, RecordBatch, StringArray
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use ndarray::{Array1, Array3};
 use ndarray_npy::NpzWriter;
-use parquet::arrow::ArrowWriter;
+use parquet::arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder};
 
 use crate::model::{
     DistributionComparison, DistributionHistogramBin, DistributionSummary, PEAK_COUNT_GRID_SIZE,
@@ -19,6 +20,67 @@ use crate::model::{
 };
 use crate::progress::ScanProgress;
 use crate::visualize::write_heatmaps;
+
+/// Directory under an output directory that stores pathway shard Parquet files.
+const PATHWAY_SHARD_DIR: &str = "pathway_shards";
+/// File name for per-shard pathway similarity-sum scores.
+const PATHWAY_SCORE_SHARD_FILE: &str = "pathway_scores.parquet";
+/// File name for per-shard pathway best-label predictions.
+const PATHWAY_PREDICTION_SHARD_FILE: &str = "pathway_predictions.parquet";
+
+/// Return whether both pathway shard files exist for a config and peak count.
+#[must_use]
+pub fn pathway_shard_exists(output_dir: &Path, config_name: &str, peak_count: usize) -> bool {
+    pathway_shard_score_path(output_dir, config_name, peak_count).exists()
+        && pathway_shard_prediction_path(output_dir, config_name, peak_count).exists()
+}
+
+/// Write pathway score and prediction shard files for one config/peak run.
+///
+/// # Errors
+///
+/// Returns an error when the shard directory cannot be created, either Parquet
+/// file cannot be written, or a temporary file cannot be renamed into place.
+pub fn write_pathway_shard(
+    output_dir: &Path,
+    config_name: &str,
+    peak_count: usize,
+    scores: &[PathwayScore],
+    predictions: &[PathwayPrediction],
+) -> Result<()> {
+    let shard_dir = pathway_shard_dir(output_dir, config_name, peak_count);
+    fs::create_dir_all(&shard_dir).with_context(|| format!("creating {}", shard_dir.display()))?;
+    write_pathway_score_file(
+        &pathway_shard_score_path(output_dir, config_name, peak_count),
+        scores,
+    )?;
+    write_pathway_prediction_file(
+        &pathway_shard_prediction_path(output_dir, config_name, peak_count),
+        predictions,
+    )
+}
+
+/// Return the pathway score shard path for one config and peak count.
+fn pathway_shard_score_path(output_dir: &Path, config_name: &str, peak_count: usize) -> PathBuf {
+    pathway_shard_dir(output_dir, config_name, peak_count).join(PATHWAY_SCORE_SHARD_FILE)
+}
+
+/// Return the pathway prediction shard path for one config and peak count.
+fn pathway_shard_prediction_path(
+    output_dir: &Path,
+    config_name: &str,
+    peak_count: usize,
+) -> PathBuf {
+    pathway_shard_dir(output_dir, config_name, peak_count).join(PATHWAY_PREDICTION_SHARD_FILE)
+}
+
+/// Return the shard directory for one config and peak count.
+fn pathway_shard_dir(output_dir: &Path, config_name: &str, peak_count: usize) -> PathBuf {
+    output_dir
+        .join(PATHWAY_SHARD_DIR)
+        .join(config_name)
+        .join(format!("top_{peak_count:03}"))
+}
 
 /// Writers for all scan artifacts.
 pub struct OutputWriters {
@@ -107,6 +169,19 @@ impl OutputWriters {
             .write(&pathway_prediction_batch(predictions)?)
     }
 
+    /// Append pathway score and prediction rows from one completed shard.
+    pub fn write_pathway_shard(
+        &mut self,
+        output_dir: &Path,
+        config_name: &str,
+        peak_count: usize,
+    ) -> Result<()> {
+        let score_path = pathway_shard_score_path(output_dir, config_name, peak_count);
+        let prediction_path = pathway_shard_prediction_path(output_dir, config_name, peak_count);
+        write_parquet_file_into_writer(&score_path, &mut self.pathway_score)?;
+        write_parquet_file_into_writer(&prediction_path, &mut self.pathway_prediction)
+    }
+
     /// Buffer one adjacent-distribution comparison.
     pub fn write_adjacent_comparison(&mut self, comparison: DistributionComparison) {
         self.pending_adjacent_comparisons.push(comparison);
@@ -168,8 +243,13 @@ impl ParquetTableWriter {
     /// Create one named Parquet writer under an output directory.
     fn create(output_dir: &Path, file_name: &str, schema: SchemaRef) -> Result<Self> {
         let path = output_dir.join(file_name);
+        Self::create_at_path(&path, schema)
+    }
+
+    /// Create one Parquet writer at an explicit path.
+    fn create_at_path(path: &Path, schema: SchemaRef) -> Result<Self> {
         let file =
-            fs::File::create(&path).with_context(|| format!("creating {}", path.display()))?;
+            fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
         let writer = ArrowWriter::try_new(file, schema, None)
             .with_context(|| format!("opening Parquet writer for {}", path.display()))?;
         Ok(Self { writer })
@@ -187,6 +267,61 @@ impl ParquetTableWriter {
     fn close(self) -> Result<()> {
         self.writer.close()?;
         Ok(())
+    }
+}
+
+/// Write one pathway score shard file atomically.
+fn write_pathway_score_file(path: &Path, scores: &[PathwayScore]) -> Result<()> {
+    let temporary_path = temporary_parquet_path(path);
+    let mut writer = ParquetTableWriter::create_at_path(&temporary_path, pathway_score_schema())?;
+    writer.write(&pathway_score_batch(scores)?)?;
+    writer.close()?;
+    rename_parquet(&temporary_path, path)
+        .with_context(|| format!("moving {} to {}", temporary_path.display(), path.display()))
+}
+
+/// Write one pathway prediction shard file atomically.
+fn write_pathway_prediction_file(path: &Path, predictions: &[PathwayPrediction]) -> Result<()> {
+    let temporary_path = temporary_parquet_path(path);
+    let mut writer =
+        ParquetTableWriter::create_at_path(&temporary_path, pathway_prediction_schema())?;
+    writer.write(&pathway_prediction_batch(predictions)?)?;
+    writer.close()?;
+    rename_parquet(&temporary_path, path)
+        .with_context(|| format!("moving {} to {}", temporary_path.display(), path.display()))
+}
+
+/// Append every row group from a shard Parquet file into an open table writer.
+fn write_parquet_file_into_writer(path: &Path, writer: &mut ParquetTableWriter) -> Result<()> {
+    let file = fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .with_context(|| format!("reading metadata from {}", path.display()))?
+        .build()
+        .with_context(|| format!("building reader for {}", path.display()))?;
+    for batch in reader {
+        writer.write(&batch.with_context(|| format!("reading batch from {}", path.display()))?)?;
+    }
+    Ok(())
+}
+
+/// Return a process-specific temporary Parquet path next to the final path.
+fn temporary_parquet_path(path: &Path) -> PathBuf {
+    let file_name = path.file_name().map_or_else(
+        || "artifact.parquet".into(),
+        |file_name| file_name.to_string_lossy(),
+    );
+    path.with_file_name(format!("{file_name}.tmp-{}", std::process::id()))
+}
+
+/// Rename a temporary Parquet artifact into place, replacing any previous file.
+fn rename_parquet(temporary_path: &Path, path: &Path) -> std::io::Result<()> {
+    match fs::rename(temporary_path, path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+            fs::remove_file(path)?;
+            fs::rename(temporary_path, path)
+        }
+        Err(error) => Err(error),
     }
 }
 

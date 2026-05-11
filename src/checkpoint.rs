@@ -233,6 +233,13 @@ pub fn checkpoint_path(output_dir: &Path, config_name: &str, peak_count: usize) 
     checkpoint_path_with_extension(output_dir, config_name, peak_count, CHECKPOINT_EXTENSION)
 }
 
+/// Return whether a compressed or legacy checkpoint file exists for a shard.
+#[must_use]
+pub fn checkpoint_exists(output_dir: &Path, config_name: &str, peak_count: usize) -> bool {
+    checkpoint_path(output_dir, config_name, peak_count).exists()
+        || legacy_checkpoint_path(output_dir, config_name, peak_count).exists()
+}
+
 /// Return the legacy uncompressed checkpoint path for one config and peak count.
 fn legacy_checkpoint_path(output_dir: &Path, config_name: &str, peak_count: usize) -> PathBuf {
     checkpoint_path_with_extension(
