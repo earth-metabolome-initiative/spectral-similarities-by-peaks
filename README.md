@@ -68,6 +68,7 @@ Lawrencium run:
 
 ```bash
 bash slurm/lrc/setup_env.sh
+bash slurm/lrc/prefetch.sh harmonized
 bash slurm/lrc/submit.sh harmonized
 bash slurm/lrc/status.sh harmonized 60
 bash slurm/lrc/finalize.sh harmonized
@@ -76,13 +77,14 @@ bash slurm/lrc/cancel.sh harmonized
 
 ```bash
 bash slurm/lrc/setup_env.sh
+bash slurm/lrc/prefetch.sh gems
 bash slurm/lrc/submit.sh gems
 bash slurm/lrc/status.sh gems 60
 bash slurm/lrc/finalize.sh gems
 bash slurm/lrc/cancel.sh gems
 ```
 
-The Lawrencium workflow submits `18 x 128 = 2304` restartable shard jobs. Each shard computes one `(similarity_config, retained_peak_count)` checkpoint under `distributions/<config>/top_<k>.bincode.zst`; final Parquet, NumPy, heatmap, and pathway artifacts are written only by `finalize-scan` after the shard grid is complete.
+The Lawrencium workflow first prefetches the dataset cache, then submits `18 x 128 = 2304` restartable shard jobs. Each shard computes one `(similarity_config, retained_peak_count)` checkpoint under `distributions/<config>/top_<k>.bincode.zst`; final Parquet, NumPy, heatmap, and pathway artifacts are written only by `finalize-scan` after the shard grid is complete.
 
 Use `bash slurm/lrc/cancel.sh all --include-legacy` to cancel all spectral jobs, including old generic `spectral-shard` arrays, and remove interrupted temporary checkpoint files.
 

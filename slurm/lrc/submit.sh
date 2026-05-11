@@ -28,8 +28,6 @@ Options:
   --row-sample-size=N           GeMS query-row sample size
   --reference-sample-size=N     GeMS reference-column sample size
   --gems-parts=N[,N...]         GeMS part numbers to load
-  --prefetch-time=HH:MM:SS      Wall time for dataset prefetch (default: 06:00:00)
-  --no-prefetch                 Submit shard arrays without a prefetch dependency
   --debug                       One lr_debug shard
   --dry-run                     Print sbatch commands without submitting
 USAGE
@@ -56,8 +54,6 @@ MZ_TOLERANCE=0.05
 ROW_SAMPLE_SIZE=""
 REFERENCE_SAMPLE_SIZE=""
 GEMS_PARTS=""
-PREFETCH=true
-PREFETCH_TIME="06:00:00"
 DEBUG=false
 DRY_RUN=false
 
@@ -98,8 +94,6 @@ for arg in "$@"; do
         --row-sample-size=*)        ROW_SAMPLE_SIZE="${arg#*=}" ;;
         --reference-sample-size=*)  REFERENCE_SAMPLE_SIZE="${arg#*=}" ;;
         --gems-parts=*)             GEMS_PARTS="${arg#*=}" ;;
-        --prefetch-time=*)          PREFETCH_TIME="${arg#*=}" ;;
-        --no-prefetch)              PREFETCH=false ;;
         --debug)                    DEBUG=true ;;
         --dry-run)                  DRY_RUN=true ;;
         -h|--help)                  usage; exit 0 ;;
@@ -150,16 +144,7 @@ if [ -n "$GEMS_PARTS" ]; then
     SCAN_ARGS+=(--gems-parts "$GEMS_PARTS")
 fi
 
-PREFETCH_ARGS=(
-    --dataset "$PRESET"
-    --data-dir "$DATA_DIR"
-)
-if [ -n "$GEMS_PARTS" ]; then
-    PREFETCH_ARGS+=(--gems-parts "$GEMS_PARTS")
-fi
-
 SHARD_JOB_NAME="spectral-$PRESET"
-PREFETCH_JOB_NAME="spectral-$PRESET-prefetch"
 
 echo "=== Lawrencium shard submission ==="
 echo "Preset:       $PRESET"
@@ -169,41 +154,8 @@ echo "Partition:    $PARTITION"
 echo "QoS:          $QOS"
 echo "Time:         $TIME"
 echo "Concurrency:  $CONCURRENCY"
-echo "Prefetch:     $PREFETCH"
 echo "Logs:         $LOGS_DIR"
 echo ""
-
-DEPENDENCY=""
-if [ "$PREFETCH" = true ]; then
-    PREFETCH_CMD=(
-        sbatch
-        --partition="$PARTITION"
-        --qos="$QOS"
-        --time="$PREFETCH_TIME"
-        --job-name="$PREFETCH_JOB_NAME"
-        --output="$LOGS_DIR/prefetch_${PRESET}_%j.out"
-        --error="$LOGS_DIR/prefetch_${PRESET}_%j.err"
-        slurm/lrc/prefetch_job.sh
-    )
-    PREFETCH_CMD+=("${PREFETCH_ARGS[@]}")
-
-    if [ "$DRY_RUN" = true ]; then
-        printf '[DRY RUN] '
-        printf '%q ' "${PREFETCH_CMD[@]}"
-        printf '\n'
-        DEPENDENCY="afterok:<prefetch-job-id>"
-    else
-        echo "Submitting dataset prefetch"
-        PREFETCH_OUTPUT="$("${PREFETCH_CMD[@]}")"
-        echo "$PREFETCH_OUTPUT"
-        if [[ "$PREFETCH_OUTPUT" =~ Submitted[[:space:]]batch[[:space:]]job[[:space:]]([0-9]+) ]]; then
-            DEPENDENCY="afterok:${BASH_REMATCH[1]}"
-        else
-            echo "ERROR: could not parse prefetch job id from sbatch output."
-            exit 1
-        fi
-    fi
-fi
 
 SUBMITTED=0
 while [ "$SUBMITTED" -lt "$N_SHARDS" ]; do
@@ -224,9 +176,6 @@ while [ "$SUBMITTED" -lt "$N_SHARDS" ]; do
         --output="$LOGS_DIR/worker_${PRESET}_%A_%a.out"
         --error="$LOGS_DIR/worker_${PRESET}_%A_%a.err"
     )
-    if [ -n "$DEPENDENCY" ]; then
-        SBATCH_CMD+=(--dependency="$DEPENDENCY")
-    fi
     SBATCH_CMD+=(
         slurm/lrc/array_job.sh
         "$BATCH_OFFSET"
