@@ -30,6 +30,9 @@ case "$PRESET" in
     *)          echo "Unknown preset: $PRESET"; usage; exit 1 ;;
 esac
 
+SHARD_JOB_NAME="spectral-$PRESET"
+PREFETCH_JOB_NAME="spectral-$PRESET-prefetch"
+
 CONFIGS=(
     cosine_mz0.000_int1.000
     modified_cosine_mz0.000_int1.000
@@ -91,14 +94,34 @@ show_status() {
     fi
 
     echo ""
-    echo "=== SLURM queue ==="
-    squeue -u "$USER" -o "%.12i %.24j %.8T %.10M %.6D %.4C %.12P %R" 2>/dev/null || true
+    echo "=== SLURM queue for $PRESET ==="
+    printf "%-12s %-24s %-8s %-10s %-6s %-4s %-12s %s\n" \
+        JOBID NAME STATE TIME NODES CPUS PARTITION REASON
+    local queue_rows
+    queue_rows=$(squeue -h -u "$USER" -o "%.12i %.24j %.8T %.10M %.6D %.4C %.12P %R" 2>/dev/null \
+        | awk -v shard="$SHARD_JOB_NAME" -v prefetch="$PREFETCH_JOB_NAME" \
+            '$2 == shard || $2 == prefetch' || true)
+    if [ -z "$queue_rows" ]; then
+        echo "none"
+    else
+        echo "$queue_rows"
+    fi
+    local legacy_rows
+    legacy_rows=$(squeue -h -u "$USER" -n spectral-shard \
+        -o "%.12i %.24j %.8T %.10M %.6D %.4C %.12P %R" 2>/dev/null || true)
+    if [ -n "$legacy_rows" ]; then
+        echo ""
+        echo "Legacy generic spectral-shard jobs are also running; they cannot be split by preset:"
+        echo "$legacy_rows"
+    fi
 
     echo ""
     echo "=== Recent non-empty errors ==="
     if [ -d "$LOGS_DIR" ]; then
         local err_files
-        err_files=$(find "$LOGS_DIR" -name '*.err' -size +0c -printf '%T@ %p\n' 2>/dev/null \
+        err_files=$(find "$LOGS_DIR" \
+            \( -name "worker_${PRESET}_*.err" -o -name "prefetch_${PRESET}_*.err" \) \
+            -size +0c -printf '%T@ %p\n' 2>/dev/null \
             | sort -rn | head -5 | awk '{print $2}')
         if [ -z "$err_files" ]; then
             echo "none"

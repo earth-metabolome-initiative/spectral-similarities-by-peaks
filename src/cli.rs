@@ -41,6 +41,8 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 /// Available command-line subcommands.
 pub enum Commands {
+    /// Download and cache a dataset before shard jobs start.
+    Prefetch(PrefetchArgs),
     /// Compute top-neighbor similarity distributions across peak cutoffs.
     Scan(ScanArgs),
     /// Compute one restartable score-distribution shard.
@@ -51,6 +53,20 @@ pub enum Commands {
     RenderHeatmaps(RenderHeatmapArgs),
     /// Rebuild pathway prediction summaries and plots from an existing scan.
     RenderPathwayArtifacts(RenderPathwayArtifactArgs),
+}
+
+#[derive(Debug, Parser)]
+/// Arguments for the `prefetch` subcommand.
+pub struct PrefetchArgs {
+    /// Dataset to download through mascot-rs.
+    #[arg(long, value_enum)]
+    pub dataset: DatasetName,
+    /// Directory where mascot-rs caches downloaded datasets.
+    #[arg(long, default_value = "data")]
+    pub data_dir: PathBuf,
+    /// GeMS-A10 part numbers to load, comma-separated. Omit to load all parts.
+    #[arg(long, value_delimiter = ',')]
+    pub gems_parts: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Parser)]

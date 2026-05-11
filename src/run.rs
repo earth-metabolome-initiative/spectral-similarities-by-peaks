@@ -13,10 +13,10 @@ use rayon::prelude::*;
 use crate::{
     checkpoint::{self, CheckpointBase, RunFingerprint},
     cli::{
-        Cli, Commands, FinalizeScanArgs, RenderHeatmapArgs, RenderPathwayArtifactArgs, ScanArgs,
-        ScanShardArgs,
+        Cli, Commands, FinalizeScanArgs, PrefetchArgs, RenderHeatmapArgs,
+        RenderPathwayArtifactArgs, ScanArgs, ScanShardArgs,
     },
-    data::load_records,
+    data::{load_dataset_records, load_records},
     distribution::{
         compare_distributions, histogram_sorted_distribution, summarize_sorted_distribution,
     },
@@ -44,12 +44,28 @@ use crate::{
 /// written.
 pub fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Commands::Prefetch(args) => run_prefetch(&args),
         Commands::Scan(args) => run_scan(args),
         Commands::ScanShard(args) => run_scan_shard(args),
         Commands::FinalizeScan(args) => run_finalize_scan(args),
         Commands::RenderHeatmaps(args) => run_render_heatmaps(&args),
         Commands::RenderPathwayArtifacts(args) => run_render_pathway_artifacts(&args),
     }
+}
+
+/// Download and cache the selected dataset without computing similarities.
+fn run_prefetch(args: &PrefetchArgs) -> Result<()> {
+    let progress = ScanProgress::new();
+    let load_progress = progress.spinner(format!("prefetching {} records", args.dataset.as_str()));
+    let records = load_dataset_records(args.dataset, &args.data_dir, args.gems_parts.as_deref())?;
+    load_progress.finish();
+    println!(
+        "Prefetched {} {} records into {}",
+        records.len(),
+        args.dataset.as_str(),
+        args.data_dir.display()
+    );
+    Ok(())
 }
 
 /// Re-render heatmap artifacts from an existing scan output directory.
@@ -1212,7 +1228,8 @@ mod tests {
         ])?;
         match cli.command {
             Commands::Scan(args) => Ok(args),
-            Commands::ScanShard(_)
+            Commands::Prefetch(_)
+            | Commands::ScanShard(_)
             | Commands::FinalizeScan(_)
             | Commands::RenderHeatmaps(_)
             | Commands::RenderPathwayArtifacts(_) => {
@@ -1245,7 +1262,8 @@ mod tests {
         ])?;
         match cli.command {
             Commands::ScanShard(args) => Ok(args),
-            Commands::Scan(_)
+            Commands::Prefetch(_)
+            | Commands::Scan(_)
             | Commands::FinalizeScan(_)
             | Commands::RenderHeatmaps(_)
             | Commands::RenderPathwayArtifacts(_) => anyhow::bail!("expected scan-shard command"),
@@ -1283,7 +1301,8 @@ mod tests {
         let cli = Cli::try_parse_from(args)?;
         match cli.command {
             Commands::ScanShard(args) => Ok(args),
-            Commands::Scan(_)
+            Commands::Prefetch(_)
+            | Commands::Scan(_)
             | Commands::FinalizeScan(_)
             | Commands::RenderHeatmaps(_)
             | Commands::RenderPathwayArtifacts(_) => anyhow::bail!("expected scan-shard command"),

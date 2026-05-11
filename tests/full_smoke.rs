@@ -269,6 +269,10 @@ fn top_level_help_is_available() -> Result<(), Box<dyn Error>> {
     );
     assert!(stdout.contains("scan"), "missing scan command: {stdout}");
     assert!(
+        stdout.contains("prefetch"),
+        "missing prefetch command: {stdout}"
+    );
+    assert!(
         stdout.contains("scan-shard"),
         "missing scan-shard command: {stdout}"
     );
@@ -279,6 +283,49 @@ fn top_level_help_is_available() -> Result<(), Box<dyn Error>> {
     assert!(
         stdout.contains("render-pathway-artifacts"),
         "missing pathway artifact command: {stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+/// The prefetch subcommand loads the synthetic dataset without writing outputs.
+fn prefetch_smoke_test_loads_dataset_cache() -> Result<(), Box<dyn Error>> {
+    let root = smoke_root()?;
+    let data_dir = root.join("data");
+    fs::create_dir_all(&data_dir)?;
+
+    let cli = Cli::try_parse_from([
+        "spectral-similarities-by-peaks",
+        "prefetch",
+        "--dataset",
+        "synthetic-smoke",
+        "--data-dir",
+        data_dir
+            .to_str()
+            .ok_or("temporary data directory path is not valid UTF-8")?,
+    ])?;
+    run::run(cli)?;
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+/// The prefetch subcommand help is generated successfully.
+fn prefetch_help_is_available() -> Result<(), Box<dyn Error>> {
+    let Err(error) = Cli::try_parse_from(["spectral-similarities-by-peaks", "prefetch", "--help"])
+    else {
+        return Err(std::io::Error::other("prefetch help should short-circuit parsing").into());
+    };
+    assert_eq!(error.kind(), ErrorKind::DisplayHelp);
+    let stdout = error.to_string();
+    assert!(
+        stdout.contains("--dataset"),
+        "missing dataset flag: {stdout}"
+    );
+    assert!(
+        stdout.contains("--gems-parts"),
+        "missing GeMS parts flag: {stdout}"
     );
     Ok(())
 }

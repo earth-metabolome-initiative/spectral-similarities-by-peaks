@@ -1,5 +1,7 @@
 //! Dataset retrieval and conversion into analysis records.
 
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use mascot_rs::prelude::{Dataset, MGFVec, MascotGenericFormat};
 use mass_spectrometry::prelude::{GenericSpectrum, SpectrumMut};
@@ -19,9 +21,23 @@ const SYNTHETIC_SMOKE_PEAKS: usize = 24;
 
 /// Load the selected dataset and convert it into records used by the pipeline.
 pub fn load_records(args: &ScanArgs) -> Result<Vec<LoadedRecord>> {
-    match args.dataset {
+    load_dataset_records(args.dataset, &args.data_dir, args.gems_parts.as_deref())
+}
+
+/// Load the selected dataset from an explicit cache directory.
+///
+/// # Errors
+///
+/// Returns an error when the selected dataset cannot be downloaded, read, or
+/// parsed.
+pub fn load_dataset_records(
+    dataset: DatasetName,
+    data_dir: &Path,
+    gems_parts: Option<&[u8]>,
+) -> Result<Vec<LoadedRecord>> {
+    match dataset {
         DatasetName::Harmonized => {
-            let target_directory = args.data_dir.join("harmonized-top-128");
+            let target_directory = data_dir.join("harmonized-top-128");
             let load = tokio_runtime()?
                 .block_on(Dataset::load(
                     MGFVec::<f64>::annotated_ms2_top_128_peaks()
@@ -34,11 +50,11 @@ pub fn load_records(args: &ScanArgs) -> Result<Vec<LoadedRecord>> {
             Ok(records_from_mgf(load.spectra()))
         }
         DatasetName::Gems => {
-            let target_directory = args.data_dir.join("gems-a10-top-128");
+            let target_directory = data_dir.join("gems-a10-top-128");
             let mut builder = MGFVec::<f64>::gems_a10_top_128_peaks()
                 .target_directory(&target_directory)
                 .verbose();
-            if let Some(parts) = &args.gems_parts {
+            if let Some(parts) = gems_parts {
                 builder = builder
                     .clone()
                     .parts(parts.iter().copied())
