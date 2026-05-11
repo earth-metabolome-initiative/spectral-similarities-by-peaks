@@ -32,6 +32,7 @@ esac
 
 SHARD_JOB_NAME="spectral-$PRESET"
 PREFETCH_JOB_NAME="spectral-$PRESET-prefetch"
+FINALIZE_JOB_NAME="spectral-$PRESET-finalize"
 
 CONFIGS=(
     cosine_mz0.000_int1.000
@@ -99,8 +100,8 @@ show_status() {
         JOBID NAME STATE TIME NODES CPUS PARTITION REASON
     local queue_rows
     queue_rows=$(squeue -h -u "$USER" -o "%.12i %.24j %.8T %.10M %.6D %.4C %.12P %R" 2>/dev/null \
-        | awk -v shard="$SHARD_JOB_NAME" -v prefetch="$PREFETCH_JOB_NAME" \
-            '$2 == shard || $2 == prefetch' || true)
+        | awk -v shard="$SHARD_JOB_NAME" -v prefetch="$PREFETCH_JOB_NAME" -v finalize="$FINALIZE_JOB_NAME" \
+            '$2 == shard || $2 == prefetch || $2 == finalize' || true)
     if [ -z "$queue_rows" ]; then
         echo "none"
     else
@@ -120,7 +121,9 @@ show_status() {
     if [ -d "$LOGS_DIR" ]; then
         local err_files
         err_files=$(find "$LOGS_DIR" \
-            \( -name "worker_${PRESET}_*.err" -o -name "prefetch_${PRESET}_*.err" \) \
+            \( -name "worker_${PRESET}_*.err" \
+            -o -name "prefetch_${PRESET}_*.err" \
+            -o -name "finalize_${PRESET}_*.err" \) \
             -size +0c -printf '%T@ %p\n' 2>/dev/null \
             | sort -rn | head -5 | awk '{print $2}')
         if [ -z "$err_files" ]; then

@@ -107,6 +107,8 @@ if [ -n "$REFERENCE_SAMPLE_SIZE" ]; then
     SCAN_ARGS+=(--reference-sample-size "$REFERENCE_SAMPLE_SIZE")
 fi
 
+FINALIZE_JOB_NAME="spectral-$PRESET-finalize"
+
 if [ "$LOCAL" = true ]; then
     CMD=(target/release/spectral-similarities-by-peaks finalize-scan)
     CMD+=("${SCAN_ARGS[@]}")
@@ -116,8 +118,9 @@ else
         --partition="$PARTITION"
         --qos="$QOS"
         --time="$TIME"
-        --output="$LOGS_DIR/finalize_%j.out"
-        --error="$LOGS_DIR/finalize_%j.err"
+        --job-name="$FINALIZE_JOB_NAME"
+        --output="$LOGS_DIR/finalize_${PRESET}_%j.out"
+        --error="$LOGS_DIR/finalize_${PRESET}_%j.err"
         slurm/lrc/finalize_job.sh
     )
     CMD+=("${SCAN_ARGS[@]}")
