@@ -28,7 +28,15 @@ clean_rust_compiler_environment() {
     unset CFLAGS_x86_64_unknown_linux_gnu CXXFLAGS_x86_64_unknown_linux_gnu
 }
 
+load_user_cargo_environment() {
+    if [ -f "$HOME/.cargo/env" ]; then
+        # shellcheck source=/dev/null
+        . "$HOME/.cargo/env"
+    fi
+}
+
 clean_rust_compiler_environment
+load_user_cargo_environment
 cd "$REPO_DIR"
 
 if [ ! -x target/release/spectral-similarities-by-peaks ]; then

@@ -16,6 +16,47 @@ clean_rust_compiler_environment() {
     unset CFLAGS_x86_64_unknown_linux_gnu CXXFLAGS_x86_64_unknown_linux_gnu
 }
 
+load_user_cargo_environment() {
+    if [ -f "$HOME/.cargo/env" ]; then
+        # shellcheck source=/dev/null
+        . "$HOME/.cargo/env"
+    fi
+}
+
+try_load_rust_module() {
+    if command -v module > /dev/null 2>&1; then
+        module load rust > /dev/null 2>&1 || true
+    fi
+}
+
+install_rustup() {
+    local installer
+    installer="$(mktemp)"
+    echo "Installing Rust with rustup under $HOME/.cargo"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o "$installer"
+    sh "$installer" -y --profile minimal --default-toolchain stable
+    rm -f "$installer"
+    load_user_cargo_environment
+}
+
+ensure_cargo() {
+    load_user_cargo_environment
+    if command -v cargo > /dev/null 2>&1; then
+        return
+    fi
+
+    try_load_rust_module
+    if command -v cargo > /dev/null 2>&1; then
+        return
+    fi
+
+    install_rustup
+    if ! command -v cargo > /dev/null 2>&1; then
+        echo "ERROR: cargo is still unavailable after rustup installation."
+        exit 1
+    fi
+}
+
 link_scratch_directory() {
     local link_path="$1"
     local target_path="$2"
@@ -33,6 +74,7 @@ link_scratch_directory() {
 }
 
 clean_rust_compiler_environment
+ensure_cargo
 
 if [ -d "$REPO_DIR/.git" ]; then
     echo "Updating $REPO_DIR"
@@ -52,6 +94,8 @@ link_scratch_directory "$REPO_DIR/logs" "$LOGS_DIR"
 
 cd "$REPO_DIR"
 export RUSTFLAGS="${RUSTFLAGS:--C target-cpu=native}"
+rustc --version
+cargo --version
 cargo build --release --locked
 
 target/release/spectral-similarities-by-peaks --help > /dev/null
