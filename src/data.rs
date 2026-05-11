@@ -123,3 +123,78 @@ fn synthetic_smoke_records() -> Result<Vec<LoadedRecord>> {
 fn usize_to_f64(value: usize) -> f64 {
     f64::from(u32::try_from(value).unwrap_or(u32::MAX))
 }
+
+#[cfg(test)]
+/// Unit tests for MGF metadata conversion into experiment records.
+mod tests {
+    use anyhow::Result;
+    use mascot_rs::prelude::MascotGenericFormat;
+    use mass_spectrometry::prelude::Spectrum;
+
+    use super::record_from_mgf;
+
+    #[test]
+    /// Feature identifiers and multi-label `NPC_PATHWAYS` values are preserved.
+    fn record_from_mgf_preserves_feature_id_and_multilabel_pathways() -> Result<()> {
+        let record = parse_mgf(
+            "BEGIN IONS\n\
+             FEATURE_ID=feature-1\n\
+             PEPMASS=250.0\n\
+             MSLEVEL=2\n\
+             NPC_PATHWAYS=Amino acids and Peptides|Polyketides\n\
+             100.0 10.0\n\
+             200.0 20.0\n\
+             END IONS\n",
+        )?;
+
+        let loaded = record_from_mgf(42, &record);
+
+        assert_eq!(loaded.id, "feature-1");
+        assert_eq!(
+            loaded.npc_pathway.as_deref(),
+            Some("Amino acids and Peptides|Polyketides")
+        );
+        assert_eq!(
+            loaded.spectrum.peaks().collect::<Vec<_>>(),
+            vec![(100.0, 10.0), (200.0, 20.0)]
+        );
+        Ok(())
+    }
+
+    #[test]
+    /// Records without feature ids fall back to validated `SPLASH`, then index.
+    fn record_from_mgf_falls_back_to_splash_then_index() -> Result<()> {
+        let with_splash = parse_mgf(
+            "BEGIN IONS\n\
+             PEPMASS=250.0\n\
+             CHARGE=1\n\
+             MSLEVEL=2\n\
+             SPLASH=splash10-0udi-0490000000-4425acda10ed7d4709bd\n\
+             100.0 10.0\n\
+             200.0 20.0\n\
+             END IONS\n",
+        )?;
+        let without_stable_id = parse_mgf(
+            "BEGIN IONS\n\
+             PEPMASS=250.0\n\
+             MSLEVEL=2\n\
+             100.0 10.0\n\
+             200.0 20.0\n\
+             END IONS\n",
+        )?;
+
+        assert_eq!(
+            record_from_mgf(7, &with_splash).id,
+            "splash10-0udi-0490000000-4425acda10ed7d4709bd"
+        );
+        let loaded = record_from_mgf(11, &without_stable_id);
+        assert_eq!(loaded.id, "11");
+        assert!(loaded.npc_pathway.is_none());
+        Ok(())
+    }
+
+    /// Parse a single realistic `MGF` block.
+    fn parse_mgf(raw: &str) -> Result<MascotGenericFormat<f64>> {
+        Ok(raw.parse()?)
+    }
+}

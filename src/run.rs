@@ -835,13 +835,17 @@ mod tests {
 
     use crate::{
         checkpoint::{self, CheckpointBase},
-        cli::{Cli, Commands},
+        cli::{Cli, Commands, FinalizeScanArgs},
         data::load_records,
-        model::{LoadedRecord, ScoreDistribution},
+        model::{LoadedRecord, PEAK_COUNT_GRID_SIZE, ScoreDistribution},
+        output,
         spectra::{select_query_ids, select_reference_ids},
     };
 
-    use super::{ensure_pathway_labels_available, run_scan, select_shard_assignment};
+    use super::{
+        ensure_pathway_labels_available, run_finalize_scan, run_scan, run_scan_shard,
+        select_shard_assignment,
+    };
 
     #[test]
     /// A valid cached distribution is reused while missing peak counts are computed.
@@ -903,6 +907,107 @@ mod tests {
     }
 
     #[test]
+    /// A cached distribution shard still backfills a missing pathway shard.
+    fn scan_shard_with_cached_distribution_writes_missing_pathway_shard() -> Result<()> {
+        let root = temp_root("cached-shard-pathways")?;
+        let data_dir = root.join("data");
+        let output_dir = root.join("out");
+        fs::create_dir_all(&data_dir)?;
+        fs::create_dir_all(&output_dir)?;
+
+        let mut args = explicit_scan_shard_args(&data_dir, &output_dir, "1", false)?;
+        args.scan.pathway_representatives_per_class = 1;
+        args.scan.validate()?;
+        let config = args
+            .scan
+            .similarity_configs
+            .first()
+            .context("test scan must include one similarity config")?;
+        let config_name = config.name();
+        let checkpoint_base = checkpoint_base_for_args(&args.scan)?;
+        let fingerprint = checkpoint_base.fingerprint(&args.scan, config, &config_name);
+        let cached = test_distribution(1);
+
+        checkpoint::store_distribution(
+            &output_dir,
+            args.scan.dataset.as_str(),
+            &config_name,
+            config.metric_label(),
+            &cached,
+            &fingerprint,
+        )?;
+
+        assert!(
+            !output::pathway_shard_exists(&output_dir, &config_name, 1),
+            "pathway shard fixture should start missing"
+        );
+
+        run_scan_shard(args)?;
+
+        let retained = checkpoint::load_distribution(
+            &output_dir,
+            "synthetic-smoke",
+            &config_name,
+            "cosine",
+            1,
+            &fingerprint,
+        );
+        assert_eq!(retained, Some(cached));
+        assert!(
+            output::pathway_shard_exists(&output_dir, &config_name, 1),
+            "cached shard should still write missing pathway artifacts"
+        );
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    /// Finalization fails before aggregation when pathway shards are missing.
+    fn finalize_scan_requires_pathway_shards_when_requested() -> Result<()> {
+        let root = temp_root("finalize-pathway-shards")?;
+        let data_dir = root.join("data");
+        let output_dir = root.join("out");
+        fs::create_dir_all(&data_dir)?;
+        fs::create_dir_all(&output_dir)?;
+
+        let mut scan = scan_args(&data_dir, &output_dir)?;
+        scan.pathway_representatives_per_class = 1;
+        scan.validate()?;
+        let config = scan
+            .similarity_configs
+            .first()
+            .context("test scan must include one similarity config")?;
+        let config_name = config.name();
+        let checkpoint_base = checkpoint_base_for_args(&scan)?;
+        let fingerprint = checkpoint_base.fingerprint(&scan, config, &config_name);
+
+        for peak_count in 1..=PEAK_COUNT_GRID_SIZE {
+            checkpoint::store_distribution(
+                &output_dir,
+                scan.dataset.as_str(),
+                &config_name,
+                config.metric_label(),
+                &test_distribution(peak_count),
+                &fingerprint,
+            )?;
+        }
+
+        let Err(error) = run_finalize_scan(FinalizeScanArgs { scan }) else {
+            anyhow::bail!("finalizing without pathway shards should fail");
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("missing pathway prediction shards"),
+            "unexpected error: {error}"
+        );
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
     /// Pathway scoring fails before a long scan when no pathway labels are loaded.
     fn pathway_scoring_requires_loaded_pathway_labels() -> Result<()> {
         let root = temp_root("pathway-labels")?;
@@ -923,6 +1028,47 @@ mod tests {
         };
         assert!(
             error.to_string().contains("NPC_PATHWAYS"),
+            "unexpected error: {error}"
+        );
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    /// Scan-shard selector arguments reject ambiguous and out-of-range requests.
+    fn scan_shard_selector_rejects_ambiguous_and_out_of_range_requests() -> Result<()> {
+        let root = temp_root("shard-selector-errors")?;
+        let data_dir = root.join("data");
+        let output_dir = root.join("out");
+        fs::create_dir_all(&data_dir)?;
+
+        let mut both_selectors = explicit_scan_shard_args(&data_dir, &output_dir, "1", false)?;
+        both_selectors.shard_index = Some(0);
+        let Err(error) = select_shard_assignment(&both_selectors) else {
+            anyhow::bail!("scan-shard with both selectors should fail");
+        };
+        assert!(
+            error.to_string().contains("not both"),
+            "unexpected error: {error}"
+        );
+
+        let mut neither_selector = explicit_scan_shard_args(&data_dir, &output_dir, "1", false)?;
+        neither_selector.peak_count = None;
+        let Err(error) = select_shard_assignment(&neither_selector) else {
+            anyhow::bail!("scan-shard without a selector should fail");
+        };
+        assert!(
+            error.to_string().contains("requires either"),
+            "unexpected error: {error}"
+        );
+
+        let out_of_range = scan_shard_args(&data_dir, &output_dir, "2304")?;
+        let Err(error) = select_shard_assignment(&out_of_range) else {
+            anyhow::bail!("out-of-range shard index should fail");
+        };
+        assert!(
+            error.to_string().contains("outside the selected grid"),
             "unexpected error: {error}"
         );
 
@@ -1000,6 +1146,36 @@ mod tests {
 
         fs::remove_dir_all(root)?;
         Ok(())
+    }
+
+    /// Build the checkpoint fingerprint base for a synthetic scan fixture.
+    fn checkpoint_base_for_args(args: &crate::cli::ScanArgs) -> Result<CheckpointBase> {
+        let mut records = load_records(args)?;
+        if let Some(max_spectra) = args.max_spectra {
+            records.truncate(max_spectra.min(records.len()));
+        }
+        let query_ids = select_query_ids(records.len(), args.row_sample_size, args.seed);
+        let reference_ids =
+            select_reference_ids(records.len(), args.reference_sample_size, args.seed);
+        Ok(CheckpointBase::new(
+            args,
+            &records,
+            &query_ids,
+            &reference_ids,
+        ))
+    }
+
+    /// Return a tiny sorted distribution fixture for one retained-peak count.
+    fn test_distribution(peak_count: usize) -> ScoreDistribution {
+        let peak_count_f64 = f64::from(u32::try_from(peak_count).unwrap_or(u32::MAX));
+        let scores = vec![0.25, 0.5, peak_count_f64.mul_add(0.000_001, 0.75)];
+        let mean =
+            scores.iter().sum::<f64>() / f64::from(u32::try_from(scores.len()).unwrap_or(u32::MAX));
+        ScoreDistribution {
+            peak_count,
+            scores,
+            mean,
+        }
     }
 
     /// Parse the synthetic scan arguments used by the resume test.
