@@ -101,6 +101,13 @@ job_name_selected() {
     return 1
 }
 
+normalize_scancel_job_id() {
+    local job_id="$1"
+    # squeue can report compact array ranges such as 22507971_[518-999%64].
+    # The concurrency suffix is valid for sbatch --array, but not for scancel.
+    printf '%s\n' "$job_id" | sed -E 's/%[0-9]+]/]/g'
+}
+
 collect_job_ids() {
     local row job_id job_name
     local rows=()
@@ -108,7 +115,7 @@ collect_job_ids() {
     for row in "${rows[@]}"; do
         read -r job_id job_name <<< "$row"
         if job_name_selected "$job_name"; then
-            printf '%s\n' "$job_id"
+            normalize_scancel_job_id "$job_id"
         fi
     done | sort -u
 }
