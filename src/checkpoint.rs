@@ -19,6 +19,12 @@ use crate::{
 const FORMAT_VERSION: u32 = 1;
 /// Directory under `output_dir` that stores distribution checkpoints.
 const CHECKPOINT_DIR: &str = "distributions";
+/// Compressed checkpoint file suffix.
+const CHECKPOINT_EXTENSION: &str = "bincode.zst";
+/// Legacy uncompressed checkpoint file suffix.
+const LEGACY_CHECKPOINT_EXTENSION: &str = "bincode";
+/// Zstandard compression level for distribution checkpoints.
+const CHECKPOINT_COMPRESSION_LEVEL: i32 = 6;
 /// Initial state for the stable `FNV-1a` fingerprint hash.
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 /// Multiplication prime for the stable `FNV-1a` fingerprint hash.
@@ -224,13 +230,37 @@ impl DistributionCheckpoint {
 /// Return the checkpoint file path for one config and retained peak count.
 #[must_use]
 pub fn checkpoint_path(output_dir: &Path, config_name: &str, peak_count: usize) -> PathBuf {
+    checkpoint_path_with_extension(output_dir, config_name, peak_count, CHECKPOINT_EXTENSION)
+}
+
+/// Return the legacy uncompressed checkpoint path for one config and peak count.
+fn legacy_checkpoint_path(output_dir: &Path, config_name: &str, peak_count: usize) -> PathBuf {
+    checkpoint_path_with_extension(
+        output_dir,
+        config_name,
+        peak_count,
+        LEGACY_CHECKPOINT_EXTENSION,
+    )
+}
+
+/// Return a checkpoint path for one config, peak count, and file suffix.
+fn checkpoint_path_with_extension(
+    output_dir: &Path,
+    config_name: &str,
+    peak_count: usize,
+    extension: &str,
+) -> PathBuf {
     output_dir
         .join(CHECKPOINT_DIR)
         .join(config_name)
-        .join(format!("top_{peak_count:03}.bincode"))
+        .join(format!("top_{peak_count:03}.{extension}"))
 }
 
 /// Load a valid checkpoint for one distribution, returning `None` on any mismatch.
+///
+/// Legacy uncompressed `.bincode` checkpoints are still accepted. When one is
+/// reused successfully, it is migrated to the compressed `.bincode.zst` form
+/// and the old file is removed after the compressed replacement is written.
 pub fn load_distribution(
     output_dir: &Path,
     dataset: &str,
@@ -240,10 +270,42 @@ pub fn load_distribution(
     fingerprint: &RunFingerprint,
 ) -> Option<ScoreDistribution> {
     let path = checkpoint_path(output_dir, config, peak_count);
-    let file = fs::File::open(path).ok()?;
-    let reader = BufReader::new(file);
-    let checkpoint = bincode::deserialize_from::<_, DistributionCheckpoint>(reader).ok()?;
-    checkpoint.into_distribution(dataset, config, metric, peak_count, fingerprint)
+    if let Ok(file) = fs::File::open(path) {
+        let reader = BufReader::new(file);
+        if let Ok(decoder) = zstd::stream::Decoder::new(reader) {
+            if let Ok(checkpoint) = bincode::deserialize_from::<_, DistributionCheckpoint>(decoder)
+            {
+                if let Some(distribution) =
+                    checkpoint.into_distribution(dataset, config, metric, peak_count, fingerprint)
+                {
+                    return Some(distribution);
+                }
+            }
+        }
+    }
+
+    let legacy_path = legacy_checkpoint_path(output_dir, config, peak_count);
+    let legacy_file = fs::File::open(&legacy_path).ok()?;
+    let legacy_reader = BufReader::new(legacy_file);
+    let legacy_checkpoint =
+        bincode::deserialize_from::<_, DistributionCheckpoint>(legacy_reader).ok()?;
+    let distribution =
+        legacy_checkpoint.into_distribution(dataset, config, metric, peak_count, fingerprint)?;
+    if store_distribution(
+        output_dir,
+        dataset,
+        config,
+        metric,
+        &distribution,
+        fingerprint,
+    )
+    .is_ok()
+    {
+        match fs::remove_file(legacy_path) {
+            Ok(()) | Err(_) => {}
+        }
+    }
+    Some(distribution)
 }
 
 /// Store one distribution checkpoint atomically in the scan output directory.
@@ -276,8 +338,13 @@ pub fn store_distribution(
         metric,
         fingerprint,
     );
-    bincode::serialize_into(&mut writer, &checkpoint)
+    let mut encoder = zstd::stream::Encoder::new(&mut writer, CHECKPOINT_COMPRESSION_LEVEL)
+        .with_context(|| format!("opening zstd encoder for {}", temporary_path.display()))?;
+    bincode::serialize_into(&mut encoder, &checkpoint)
         .with_context(|| format!("serializing {}", temporary_path.display()))?;
+    encoder
+        .finish()
+        .with_context(|| format!("finishing zstd encoder for {}", temporary_path.display()))?;
     writer
         .flush()
         .with_context(|| format!("flushing {}", temporary_path.display()))?;
@@ -287,7 +354,11 @@ pub fn store_distribution(
 
 /// Return a process-specific temporary checkpoint path next to the final file.
 fn temporary_checkpoint_path(path: &Path) -> PathBuf {
-    path.with_extension(format!("bincode.tmp-{}", std::process::id()))
+    let file_name = path.file_name().map_or_else(
+        || "checkpoint".into(),
+        |file_name| file_name.to_string_lossy(),
+    );
+    path.with_file_name(format!("{file_name}.tmp-{}", std::process::id()))
 }
 
 /// Rename a temporary checkpoint into place, replacing the previous checkpoint.
@@ -352,13 +423,17 @@ fn update_usize(hash: &mut u64, value: usize) {
 mod tests {
     use std::{
         fs,
+        io::{BufWriter, Read, Write},
         path::{Path, PathBuf},
         time::{SystemTime, UNIX_EPOCH},
     };
 
     use anyhow::Result;
 
-    use super::{RunFingerprint, checkpoint_path, load_distribution, store_distribution};
+    use super::{
+        DistributionCheckpoint, RunFingerprint, checkpoint_path, legacy_checkpoint_path,
+        load_distribution, store_distribution,
+    };
     use crate::model::ScoreDistribution;
 
     #[test]
@@ -390,7 +465,51 @@ mod tests {
         );
 
         assert_eq!(loaded, Some(distribution));
+        assert_zstd_checkpoint(&checkpoint_path(&root, "cosine_mz0.000_int1.000", 7))?;
         assert!(!temporary_files_exist(&root)?);
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    /// Legacy uncompressed checkpoints are loaded and migrated to zstd.
+    fn legacy_uncompressed_distribution_is_migrated() -> Result<()> {
+        let root = temp_root("legacy")?;
+        let fingerprint = test_fingerprint("cosine_mz0.000_int1.000");
+        let distribution = ScoreDistribution {
+            peak_count: 9,
+            scores: vec![0.1, 0.2, 0.4],
+            mean: 0.25,
+        };
+        let legacy_path = legacy_checkpoint_path(&root, "cosine_mz0.000_int1.000", 9);
+        let parent = legacy_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("legacy checkpoint path has no parent"))?;
+        fs::create_dir_all(parent)?;
+        let file = fs::File::create(&legacy_path)?;
+        let mut writer = BufWriter::new(file);
+        let checkpoint = DistributionCheckpoint::from_distribution(
+            &distribution,
+            "synthetic-smoke",
+            "cosine_mz0.000_int1.000",
+            "cosine",
+            &fingerprint,
+        );
+        bincode::serialize_into(&mut writer, &checkpoint)?;
+        writer.flush()?;
+
+        let loaded = load_distribution(
+            &root,
+            "synthetic-smoke",
+            "cosine_mz0.000_int1.000",
+            "cosine",
+            9,
+            &fingerprint,
+        );
+
+        assert_eq!(loaded, Some(distribution));
+        assert!(!legacy_path.exists());
+        assert_zstd_checkpoint(&checkpoint_path(&root, "cosine_mz0.000_int1.000", 9))?;
         fs::remove_dir_all(root)?;
         Ok(())
     }
@@ -439,9 +558,17 @@ mod tests {
                 12
             ),
             PathBuf::from(
-                "out/distributions/entropy_mz0.000_int1.000_weightedtrue/top_012.bincode"
+                "out/distributions/entropy_mz0.000_int1.000_weightedtrue/top_012.bincode.zst"
             )
         );
+    }
+
+    /// Assert that a checkpoint starts with the zstd frame magic number.
+    fn assert_zstd_checkpoint(path: &Path) -> Result<()> {
+        let mut magic = [0_u8; 4];
+        fs::File::open(path)?.read_exact(&mut magic)?;
+        assert_eq!(magic, [0x28, 0xb5, 0x2f, 0xfd]);
+        Ok(())
     }
 
     /// Return a deterministic test fingerprint with one variable config label.

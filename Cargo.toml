@@ -26,6 +26,7 @@ rand_chacha = "0.10"
 rayon = "1.11"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1.52", features = ["rt-multi-thread"] }
+zstd = "0.13"
 
 [lints.rust]
 missing_docs = "deny"

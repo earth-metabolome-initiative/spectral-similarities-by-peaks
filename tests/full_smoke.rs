@@ -237,7 +237,7 @@ fn assert_distribution_checkpoints(output_dir: &Path) -> Result<(), Box<dyn Erro
             let path = output_dir
                 .join("distributions")
                 .join(config)
-                .join(format!("top_{peak_count:03}.bincode"));
+                .join(format!("top_{peak_count:03}.bincode.zst"));
             let metadata = fs::metadata(&path)?;
             assert!(metadata.len() > 0, "{} is empty", path.display());
         }
