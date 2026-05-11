@@ -9,6 +9,7 @@ SCRATCH_ROOT="${SPECTRAL_SCRATCH_ROOT:-/global/scratch/users/$USER/spectral-simi
 DATA_DIR="$SCRATCH_ROOT/data"
 RESULTS_DIR="$SCRATCH_ROOT/results"
 LOGS_DIR="$SCRATCH_ROOT/logs"
+MIN_RUST_VERSION="1.86.0"
 
 clean_rust_compiler_environment() {
     unset CC CXX AR CFLAGS CXXFLAGS LDFLAGS
@@ -39,20 +40,77 @@ install_rustup() {
     load_user_cargo_environment
 }
 
+cargo_version() {
+    local output version
+    output="$(cargo --version 2> /dev/null)" || return 1
+    version="${output#cargo }"
+    printf '%s\n' "${version%% *}"
+}
+
+version_ge() {
+    local candidate="$1"
+    local required="$2"
+    local candidate_major candidate_minor candidate_patch
+    local required_major required_minor required_patch
+
+    IFS=. read -r candidate_major candidate_minor candidate_patch <<< "$candidate"
+    IFS=. read -r required_major required_minor required_patch <<< "$required"
+    candidate_patch="${candidate_patch%%[^0-9]*}"
+    required_patch="${required_patch%%[^0-9]*}"
+
+    candidate_major="${candidate_major:-0}"
+    candidate_minor="${candidate_minor:-0}"
+    candidate_patch="${candidate_patch:-0}"
+    required_major="${required_major:-0}"
+    required_minor="${required_minor:-0}"
+    required_patch="${required_patch:-0}"
+
+    if [ "$candidate_major" -ne "$required_major" ]; then
+        [ "$candidate_major" -gt "$required_major" ]
+        return
+    fi
+    if [ "$candidate_minor" -ne "$required_minor" ]; then
+        [ "$candidate_minor" -gt "$required_minor" ]
+        return
+    fi
+    [ "$candidate_patch" -ge "$required_patch" ]
+}
+
+cargo_is_recent_enough() {
+    local version
+    command -v cargo > /dev/null 2>&1 || return 1
+    version="$(cargo_version)" || return 1
+    version_ge "$version" "$MIN_RUST_VERSION"
+}
+
+install_or_update_rustup_stable() {
+    if ! command -v rustup > /dev/null 2>&1; then
+        install_rustup
+    fi
+
+    rustup toolchain install stable --profile minimal
+    rustup default stable
+    load_user_cargo_environment
+}
+
 ensure_cargo() {
     load_user_cargo_environment
-    if command -v cargo > /dev/null 2>&1; then
+    if cargo_is_recent_enough; then
         return
     fi
 
     try_load_rust_module
-    if command -v cargo > /dev/null 2>&1; then
+    if cargo_is_recent_enough; then
         return
     fi
 
-    install_rustup
-    if ! command -v cargo > /dev/null 2>&1; then
-        echo "ERROR: cargo is still unavailable after rustup installation."
+    if command -v cargo > /dev/null 2>&1; then
+        echo "Found $(cargo --version), but this project requires Rust/Cargo $MIN_RUST_VERSION+."
+    fi
+
+    install_or_update_rustup_stable
+    if ! cargo_is_recent_enough; then
+        echo "ERROR: cargo is still unavailable or older than $MIN_RUST_VERSION after rustup setup."
         exit 1
     fi
 }
