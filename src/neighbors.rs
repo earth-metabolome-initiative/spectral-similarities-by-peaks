@@ -27,7 +27,7 @@ pub struct SearchBatch<'a> {
     /// Loaded metadata records.
     pub records: &'a [LoadedRecord],
     /// Prepared spectra aligned to `records`.
-    pub spectra: &'a [GenericSpectrum],
+    pub spectra: &'a [GenericSpectrum<f32>],
     /// Query row ids for this batch.
     pub query_ids: &'a [usize],
     /// Reference row ids for this batch.
@@ -50,7 +50,7 @@ fn compute_cosine_neighbors(batch: &SearchBatch<'_>) -> Result<Vec<NeighborHit>>
         return compute_cosine_reference_neighbors(batch);
     }
 
-    let mut builder = FlashCosineSelfSimilarityIndex::<f64>::builder()
+    let mut builder = FlashCosineSelfSimilarityIndex::<f32>::builder()
         .mz_power(batch.config.mz_power)
         .intensity_power(batch.config.intensity_power)
         .mz_tolerance(batch.args.mz_tolerance)
@@ -110,9 +110,9 @@ fn compute_cosine_reference_neighbors(batch: &SearchBatch<'_>) -> Result<Vec<Nei
 /// Compute cosine neighbors against already selected reference spectra.
 fn compute_cosine_neighbors_against_references(
     batch: &SearchBatch<'_>,
-    reference_spectra: &[GenericSpectrum],
+    reference_spectra: &[GenericSpectrum<f32>],
 ) -> Result<Vec<NeighborHit>> {
-    let mut builder = FlashCosineThresholdIndex::<f64>::builder()
+    let mut builder = FlashCosineThresholdIndex::<f32>::builder()
         .mz_power(batch.config.mz_power)
         .intensity_power(batch.config.intensity_power)
         .mz_tolerance(batch.args.mz_tolerance)
@@ -155,9 +155,9 @@ fn compute_modified_cosine_neighbors(batch: &SearchBatch<'_>) -> Result<Vec<Neig
 /// Compute modified-cosine neighbors against already selected reference spectra.
 fn compute_modified_cosine_neighbors_against_references(
     batch: &SearchBatch<'_>,
-    reference_spectra: &[GenericSpectrum],
+    reference_spectra: &[GenericSpectrum<f32>],
 ) -> Result<Vec<NeighborHit>> {
-    let mut builder = FlashCosineThresholdIndex::<f64>::builder()
+    let mut builder = FlashCosineThresholdIndex::<f32>::builder()
         .mz_power(batch.config.mz_power)
         .intensity_power(batch.config.intensity_power)
         .mz_tolerance(batch.args.mz_tolerance)
@@ -189,11 +189,11 @@ fn compute_modified_cosine_neighbors_against_references(
 }
 
 /// Return a broad precursor tolerance that preserves no-filter semantics.
-fn broad_pepmass_tolerance(spectra: &[GenericSpectrum]) -> f64 {
+fn broad_pepmass_tolerance(spectra: &[GenericSpectrum<f32>]) -> f64 {
     let mut min_precursor_mz = f64::INFINITY;
     let mut max_precursor_mz = f64::NEG_INFINITY;
     for spectrum in spectra {
-        let precursor_mz = spectrum.precursor_mz();
+        let precursor_mz = f64::from(spectrum.precursor_mz());
         min_precursor_mz = min_precursor_mz.min(precursor_mz);
         max_precursor_mz = max_precursor_mz.max(precursor_mz);
     }
@@ -206,7 +206,7 @@ fn compute_entropy_neighbors(batch: &SearchBatch<'_>) -> Result<Vec<NeighborHit>
         return compute_entropy_reference_neighbors(batch);
     }
 
-    let mut builder = FlashEntropyIndex::<f64>::builder()
+    let mut builder = FlashEntropyIndex::<f32>::builder()
         .mz_power(batch.config.mz_power)
         .intensity_power(batch.config.intensity_power)
         .mz_tolerance(batch.args.mz_tolerance)
@@ -247,9 +247,9 @@ fn compute_entropy_reference_neighbors(batch: &SearchBatch<'_>) -> Result<Vec<Ne
 /// Compute entropy neighbors against already selected reference spectra.
 fn compute_entropy_neighbors_against_references(
     batch: &SearchBatch<'_>,
-    reference_spectra: &[GenericSpectrum],
+    reference_spectra: &[GenericSpectrum<f32>],
 ) -> Result<Vec<NeighborHit>> {
-    let mut builder = FlashEntropyIndex::<f64>::builder()
+    let mut builder = FlashEntropyIndex::<f32>::builder()
         .mz_power(batch.config.mz_power)
         .intensity_power(batch.config.intensity_power)
         .mz_tolerance(batch.args.mz_tolerance)
@@ -293,9 +293,9 @@ fn compute_modified_entropy_neighbors(batch: &SearchBatch<'_>) -> Result<Vec<Nei
 /// Compute modified-entropy neighbors against already selected reference spectra.
 fn compute_modified_entropy_neighbors_against_references(
     batch: &SearchBatch<'_>,
-    reference_spectra: &[GenericSpectrum],
+    reference_spectra: &[GenericSpectrum<f32>],
 ) -> Result<Vec<NeighborHit>> {
-    let mut builder = FlashEntropyIndex::<f64>::builder()
+    let mut builder = FlashEntropyIndex::<f32>::builder()
         .mz_power(batch.config.mz_power)
         .intensity_power(batch.config.intensity_power)
         .mz_tolerance(batch.args.mz_tolerance)
@@ -387,7 +387,7 @@ fn collect_external_neighbors<F, G>(
 ) -> Result<Vec<NeighborHit>>
 where
     F: Fn(
-            &GenericSpectrum,
+            &GenericSpectrum<f32>,
             &mut SearchState,
             &mut TopKSearchState,
             &mut dyn FnMut(FlashSearchResult),
@@ -445,7 +445,10 @@ fn reference_hit_target(
 }
 
 /// Return cloned spectra for the selected reference row ids.
-fn reference_spectra(spectra: &[GenericSpectrum], reference_ids: &[usize]) -> Vec<GenericSpectrum> {
+fn reference_spectra(
+    spectra: &[GenericSpectrum<f32>],
+    reference_ids: &[usize],
+) -> Vec<GenericSpectrum<f32>> {
     reference_ids
         .iter()
         .map(|&reference_id| spectra[reference_id].clone())
@@ -535,8 +538,8 @@ mod tests {
     }
 
     /// Build one minimal labeled record for neighbor tests.
-    fn synthetic_record(id: &str, precursor_mz: f64, peaks: &[(f64, f64)]) -> Result<LoadedRecord> {
-        let mut spectrum = GenericSpectrum::try_with_capacity(precursor_mz, peaks.len())?;
+    fn synthetic_record(id: &str, precursor_mz: f64, peaks: &[(f32, f32)]) -> Result<LoadedRecord> {
+        let mut spectrum = GenericSpectrum::<f32>::try_with_capacity(precursor_mz, peaks.len())?;
         for &(mz, intensity) in peaks {
             spectrum.add_peak(mz, intensity)?;
         }

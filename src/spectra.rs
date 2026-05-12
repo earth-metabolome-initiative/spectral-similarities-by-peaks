@@ -42,7 +42,7 @@ pub fn prepare_spectra(
     peak_count: usize,
     mz_tolerance: f64,
     merge_close_peaks: bool,
-) -> Result<Vec<GenericSpectrum>> {
+) -> Result<Vec<GenericSpectrum<f32>>> {
     let task = progress.bar(
         u64::try_from(records.len()).unwrap_or(u64::MAX),
         format!("preparing top {peak_count} peaks"),
@@ -66,15 +66,15 @@ pub fn prepare_spectra(
 
 /// Apply top-peak selection and optional close-peak merging to one spectrum.
 fn top_peaks_spectrum(
-    spectrum: &GenericSpectrum,
+    spectrum: &GenericSpectrum<f32>,
     peak_count: usize,
     mz_tolerance: f64,
     merge_close_peaks: bool,
-) -> Result<GenericSpectrum> {
+) -> Result<GenericSpectrum<f32>> {
     let truncated = spectrum.top_k_peaks(peak_count)?;
 
     if merge_close_peaks {
-        let processor = SiriusMergeClosePeaks::<f64>::new_with_precision(mz_tolerance)?;
+        let processor = SiriusMergeClosePeaks::<f32>::new_with_precision(mz_tolerance)?;
         return Ok(processor.process(&truncated));
     }
     Ok(truncated)

@@ -40,7 +40,7 @@ pub fn load_dataset_records(
             let target_directory = data_dir.join("harmonized-top-128");
             let load = tokio_runtime()?
                 .block_on(Dataset::load(
-                    MGFVec::<f64>::annotated_ms2_top_128_peaks()
+                    MGFVec::<f32>::annotated_ms2_top_128_peaks()
                         .target_directory(&target_directory)
                         .verbose(),
                 ))
@@ -51,7 +51,7 @@ pub fn load_dataset_records(
         }
         DatasetName::Gems => {
             let target_directory = data_dir.join("gems-a10-top-128");
-            let mut builder = MGFVec::<f64>::gems_a10_top_128_peaks()
+            let mut builder = MGFVec::<f32>::gems_a10_top_128_peaks()
                 .target_directory(&target_directory)
                 .verbose();
             if let Some(parts) = gems_parts {
@@ -71,6 +71,24 @@ pub fn load_dataset_records(
     }
 }
 
+/// Replace each record's source spectrum with an empty placeholder.
+///
+/// Used by shard runs after `prepare_spectra` has built the truncated copy,
+/// so the full-precision source spectra can be freed for the remainder of
+/// the shard. Scan mode reuses the source spectra across peak counts and
+/// must not call this.
+///
+/// # Errors
+///
+/// Returns an error if the placeholder spectrum cannot be constructed,
+/// which in practice cannot happen because the precursor m/z is fixed.
+pub fn drop_record_spectra(records: &mut [LoadedRecord]) -> Result<()> {
+    for record in records.iter_mut() {
+        record.spectrum = GenericSpectrum::<f32>::try_with_capacity(1.0, 0)?;
+    }
+    Ok(())
+}
+
 /// Build the `Tokio` runtime required by the async download stack.
 fn tokio_runtime() -> Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_multi_thread()
@@ -80,7 +98,7 @@ fn tokio_runtime() -> Result<tokio::runtime::Runtime> {
 }
 
 /// Convert a parsed `MGF` collection into experiment records.
-fn records_from_mgf(records: &MGFVec<f64>) -> Vec<LoadedRecord> {
+fn records_from_mgf(records: &MGFVec<f32>) -> Vec<LoadedRecord> {
     records
         .iter()
         .enumerate()
@@ -89,7 +107,7 @@ fn records_from_mgf(records: &MGFVec<f64>) -> Vec<LoadedRecord> {
 }
 
 /// Convert one `MGF` record into a loaded spectrum record.
-fn record_from_mgf(index: usize, record: &MascotGenericFormat<f64>) -> LoadedRecord {
+fn record_from_mgf(index: usize, record: &MascotGenericFormat<f32>) -> LoadedRecord {
     let metadata = record.metadata();
     let id = record
         .feature_id()
@@ -113,16 +131,18 @@ fn synthetic_smoke_records() -> Result<Vec<LoadedRecord>> {
         .map(|index| {
             let cluster = index % 4;
             let replicate = index / 4;
-            let cluster_offset = usize_to_f64(cluster) * 0.01;
-            let replicate_scale = 1.0 + usize_to_f64(replicate) * 0.01;
-            let precursor_mz = 500.0 + usize_to_f64(cluster);
-            let mut spectrum =
-                GenericSpectrum::try_with_capacity(precursor_mz, SYNTHETIC_SMOKE_PEAKS)?;
+            let cluster_offset = usize_to_f32(cluster) * 0.01;
+            let replicate_scale = 1.0 + usize_to_f32(replicate) * 0.01;
+            let precursor_mz = 500.0 + usize_to_f32(cluster);
+            let mut spectrum = GenericSpectrum::<f32>::try_with_capacity(
+                precursor_mz.into(),
+                SYNTHETIC_SMOKE_PEAKS,
+            )?;
 
             for peak_index in 0..SYNTHETIC_SMOKE_PEAKS {
                 let peak_rank = SYNTHETIC_SMOKE_PEAKS - peak_index;
-                let mz = usize_to_f64(peak_index).mul_add(25.0, 100.0 + cluster_offset);
-                let intensity = usize_to_f64(peak_rank) * replicate_scale;
+                let mz = usize_to_f32(peak_index).mul_add(25.0, 100.0 + cluster_offset);
+                let intensity = usize_to_f32(peak_rank) * replicate_scale;
                 spectrum.add_peak(mz, intensity)?;
             }
 
@@ -135,9 +155,9 @@ fn synthetic_smoke_records() -> Result<Vec<LoadedRecord>> {
         .collect()
 }
 
-/// Convert small synthetic-data indices into `f64`.
-fn usize_to_f64(value: usize) -> f64 {
-    f64::from(u32::try_from(value).unwrap_or(u32::MAX))
+/// Convert small synthetic-data indices into `f32`.
+fn usize_to_f32(value: usize) -> f32 {
+    u16::try_from(value).map_or_else(|_| f32::from(u16::MAX), f32::from)
 }
 
 #[cfg(test)]
@@ -210,7 +230,7 @@ mod tests {
     }
 
     /// Parse a single realistic `MGF` block.
-    fn parse_mgf(raw: &str) -> Result<MascotGenericFormat<f64>> {
+    fn parse_mgf(raw: &str) -> Result<MascotGenericFormat<f32>> {
         Ok(raw.parse()?)
     }
 }

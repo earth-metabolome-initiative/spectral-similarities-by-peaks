@@ -16,7 +16,7 @@ use crate::{
         Cli, Commands, FinalizeScanArgs, PrefetchArgs, RenderHeatmapArgs,
         RenderPathwayArtifactArgs, ScanArgs, ScanShardArgs,
     },
-    data::{load_dataset_records, load_records},
+    data::{self, load_dataset_records, load_records},
     distribution::{
         compare_distributions, histogram_sorted_distribution, summarize_sorted_distribution,
     },
@@ -232,7 +232,7 @@ fn run_scan_shard(mut args: ScanShardArgs) -> Result<()> {
         .with_context(|| format!("creating {}", args.scan.output_dir.display()))?;
 
     let progress = ScanProgress::new();
-    let data = load_scan_data(&args.scan, &progress)?;
+    let mut data = load_scan_data(&args.scan, &progress)?;
     let scan_progress = progress.bar(
         1,
         format!(
@@ -240,22 +240,15 @@ fn run_scan_shard(mut args: ScanShardArgs) -> Result<()> {
             assignment.shard_index, assignment.config_index, assignment.peak_count
         ),
     );
-    let inputs = ScanInputs {
-        args: &args.scan,
-        progress: &progress,
-        records: &data.records,
-        query_ids: &data.query_ids,
-        reference_ids: &data.reference_ids,
-        checkpoint_base: &data.checkpoint_base,
-        scan_progress: &scan_progress,
-    };
     let config_name = assignment.config.name();
     let fingerprint =
-        inputs
-            .checkpoint_base
-            .fingerprint(inputs.args, &assignment.config, &config_name);
+        data.checkpoint_base
+            .fingerprint(&args.scan, &assignment.config, &config_name);
     run_peak_count_shard(
-        &inputs,
+        &args.scan,
+        &progress,
+        &scan_progress,
+        &mut data,
         &assignment.config,
         &config_name,
         &fingerprint,
@@ -549,48 +542,61 @@ fn finalize_similarity_config(
 }
 
 /// Run one retained-peak count as a shard-safe checkpoint-only computation.
+#[allow(clippy::too_many_arguments)]
 fn run_peak_count_shard(
-    inputs: &ScanInputs<'_>,
+    args: &ScanArgs,
+    progress: &ScanProgress,
+    scan_progress: &ProgressTask,
+    data: &mut ScanData,
     config: &SimilarityConfig,
     config_name: &str,
     fingerprint: &RunFingerprint,
     peak_count: usize,
 ) -> Result<()> {
-    inputs
-        .scan_progress
-        .set_message(format!("scanning {config_name} top {peak_count} peaks"));
+    scan_progress.set_message(format!("scanning {config_name} top {peak_count} peaks"));
     let cached_distribution = checkpoint::load_distribution(
-        &inputs.args.output_dir,
-        inputs.args.dataset.as_str(),
+        &args.output_dir,
+        args.dataset.as_str(),
         config_name,
         config.metric_label(),
         peak_count,
         fingerprint,
     );
-    let needs_pathway_shard = inputs.args.pathway_representatives_per_class > 0
-        && !output::pathway_shard_exists(&inputs.args.output_dir, config_name, peak_count);
+    let needs_pathway_shard = args.pathway_representatives_per_class > 0
+        && !output::pathway_shard_exists(&args.output_dir, config_name, peak_count);
     if cached_distribution.is_some() && !needs_pathway_shard {
-        inputs
-            .scan_progress
-            .set_message(format!("using cached {config_name} top {peak_count} peaks"));
+        scan_progress.set_message(format!("using cached {config_name} top {peak_count} peaks"));
         return Ok(());
     }
 
     let spectra = prepare_spectra(
-        inputs.progress,
-        inputs.records,
+        progress,
+        &data.records,
         peak_count,
-        inputs.args.mz_tolerance,
-        !inputs.args.no_merge_close_peaks,
+        args.mz_tolerance,
+        !args.no_merge_close_peaks,
     )
     .with_context(|| format!("preparing spectra for top {peak_count} peaks"))?;
 
+    data::drop_record_spectra(&mut data.records)
+        .context("releasing source spectra after shard prepare")?;
+
+    let inputs = ScanInputs {
+        args,
+        progress,
+        records: &data.records,
+        query_ids: &data.query_ids,
+        reference_ids: &data.reference_ids,
+        checkpoint_base: &data.checkpoint_base,
+        scan_progress,
+    };
+
     if cached_distribution.is_none() {
         let (distribution, _summary) =
-            compute_score_distribution(inputs, config, config_name, peak_count, &spectra)?;
+            compute_score_distribution(&inputs, config, config_name, peak_count, &spectra)?;
         checkpoint::store_distribution(
-            &inputs.args.output_dir,
-            inputs.args.dataset.as_str(),
+            &args.output_dir,
+            args.dataset.as_str(),
             config_name,
             config.metric_label(),
             &distribution,
@@ -603,8 +609,8 @@ fn run_peak_count_shard(
 
     if needs_pathway_shard {
         if let Some((pathway_scores, pathway_predictions)) = score_pathway_representatives(
-            inputs.args,
-            inputs.progress,
+            args,
+            progress,
             config,
             peak_count,
             inputs.records,
@@ -612,7 +618,7 @@ fn run_peak_count_shard(
             inputs.query_ids,
         )? {
             output::write_pathway_shard(
-                &inputs.args.output_dir,
+                &args.output_dir,
                 config_name,
                 peak_count,
                 &pathway_scores,
@@ -699,7 +705,7 @@ fn compute_score_distribution(
     config: &SimilarityConfig,
     config_name: &str,
     peak_count: usize,
-    spectra: &[GenericSpectrum],
+    spectra: &[GenericSpectrum<f32>],
 ) -> Result<(ScoreDistribution, DistributionSummary)> {
     let hits = compute_neighbors(&SearchBatch {
         args: inputs.args,
@@ -1036,7 +1042,7 @@ mod tests {
         let records = vec![LoadedRecord {
             id: "unlabeled".to_string(),
             npc_pathway: None,
-            spectrum: GenericSpectrum::try_with_capacity(100.0, 0)?,
+            spectrum: GenericSpectrum::<f32>::try_with_capacity(100.0, 0)?,
         }];
 
         let Err(error) = ensure_pathway_labels_available(&args, &records) else {

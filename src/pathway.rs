@@ -22,7 +22,7 @@ pub fn score_pathway_representatives(
     config: &SimilarityConfig,
     peak_count: usize,
     records: &[LoadedRecord],
-    spectra: &[GenericSpectrum],
+    spectra: &[GenericSpectrum<f32>],
     query_ids: &[usize],
 ) -> Result<Option<(Vec<PathwayScore>, Vec<PathwayPrediction>)>> {
     if args.pathway_representatives_per_class == 0 {
@@ -145,7 +145,7 @@ fn score_query_pathways(
     config_name: &str,
     peak_count: usize,
     records: &[LoadedRecord],
-    spectra: &[GenericSpectrum],
+    spectra: &[GenericSpectrum<f32>],
     query_index: usize,
     representatives: &[PathwayRepresentative],
     pathways: &BTreeMap<String, usize>,
@@ -267,9 +267,9 @@ struct PathwayAggregate {
 /// Metric-family-specific index over pathway representative spectra.
 enum RepresentativeIndex {
     /// Linear-cosine index used for direct and modified cosine.
-    Cosine(FlashCosineThresholdIndex<f64>),
+    Cosine(FlashCosineThresholdIndex<f32>),
     /// Entropy index used for direct and modified entropy.
-    Entropy(FlashEntropyIndex<f64>),
+    Entropy(FlashEntropyIndex<f32>),
 }
 
 impl RepresentativeIndex {
@@ -277,11 +277,11 @@ impl RepresentativeIndex {
     fn build(
         args: &ScanArgs,
         config: &SimilarityConfig,
-        spectra: &[GenericSpectrum],
+        spectra: &[GenericSpectrum<f32>],
     ) -> Result<Self> {
         match config.metric {
             Metric::Cosine | Metric::ModifiedCosine => {
-                let mut builder = FlashCosineThresholdIndex::<f64>::builder()
+                let mut builder = FlashCosineThresholdIndex::<f32>::builder()
                     .mz_power(config.mz_power)
                     .intensity_power(config.intensity_power)
                     .mz_tolerance(args.mz_tolerance)
@@ -293,7 +293,7 @@ impl RepresentativeIndex {
                 Ok(Self::Cosine(builder.build(spectra)?))
             }
             Metric::Entropy | Metric::ModifiedEntropy => {
-                let mut builder = FlashEntropyIndex::<f64>::builder()
+                let mut builder = FlashEntropyIndex::<f32>::builder()
                     .mz_power(config.mz_power)
                     .intensity_power(config.intensity_power)
                     .mz_tolerance(args.mz_tolerance)
@@ -319,7 +319,7 @@ impl RepresentativeIndex {
     fn for_each_top_k_with_state(
         &self,
         metric: Metric,
-        query: &GenericSpectrum,
+        query: &GenericSpectrum<f32>,
         top_k: usize,
         state: &mut SearchState,
         top_k_state: &mut TopKSearchState,
@@ -425,7 +425,7 @@ mod tests {
         Ok(LoadedRecord {
             id: id.to_string(),
             npc_pathway: npc_pathway.map(ToOwned::to_owned),
-            spectrum: GenericSpectrum::try_with_capacity(100.0, 0)?,
+            spectrum: GenericSpectrum::<f32>::try_with_capacity(100.0, 0)?,
         })
     }
 }

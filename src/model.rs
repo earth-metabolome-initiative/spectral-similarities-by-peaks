@@ -129,7 +129,7 @@ pub struct LoadedRecord {
     /// Optional raw `NPC` pathway label field.
     pub npc_pathway: Option<String>,
     /// Spectrum used for peak selection and similarity indexing.
-    pub spectrum: GenericSpectrum,
+    pub spectrum: GenericSpectrum<f32>,
 }
 
 #[derive(Debug)]
