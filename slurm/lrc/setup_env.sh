@@ -151,7 +151,12 @@ link_scratch_directory "$REPO_DIR/results" "$RESULTS_DIR"
 link_scratch_directory "$REPO_DIR/logs" "$LOGS_DIR"
 
 cd "$REPO_DIR"
-export RUSTFLAGS="${RUSTFLAGS:--C target-cpu=native}"
+# Build a binary portable across Lawrencium partitions. The login node has
+# newer CPU instructions than the lr4 debug nodes, so target-cpu=native breaks
+# cross-partition runs with SIGILL. x86-64-v3 covers Haswell+ (AVX2) which is
+# the floor across lr4, lr5, and lr6. Override with RUSTFLAGS if you really
+# want a host-specific build.
+export RUSTFLAGS="${RUSTFLAGS:--C target-cpu=x86-64-v3}"
 rustc --version
 cargo --version
 cargo build --release --locked
