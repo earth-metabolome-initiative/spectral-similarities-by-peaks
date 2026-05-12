@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=spectral-finalize
-#SBATCH --account=ac_scscollab
+#SBATCH --account=pc_reese2026pi
 #SBATCH --partition=lr6
 #SBATCH --qos=lr_normal
 #SBATCH --ntasks=1

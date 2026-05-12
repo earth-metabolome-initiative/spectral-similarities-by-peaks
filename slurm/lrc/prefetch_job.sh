@@ -1,7 +1,7 @@
 #!/bin/bash
 # Download the selected dataset once before Lawrencium shard arrays start.
 #SBATCH --job-name=spectral-prefetch
-#SBATCH --account=ac_scscollab
+#SBATCH --account=pc_reese2026pi
 #SBATCH --partition=lr6
 #SBATCH --qos=lr_normal
 #SBATCH --ntasks=1
