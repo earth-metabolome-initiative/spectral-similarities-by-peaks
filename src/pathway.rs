@@ -86,6 +86,19 @@ pub fn score_pathway_representatives(
     Ok(Some((scores, predictions)))
 }
 
+/// Return the original record indices that would be selected as pathway
+/// representatives, used to keep them alive when subsetting records.
+#[must_use]
+pub fn pathway_representative_indices(
+    records: &[LoadedRecord],
+    representatives_per_class: usize,
+) -> Vec<usize> {
+    select_pathway_representatives(records, representatives_per_class)
+        .into_iter()
+        .map(|representative| representative.record_index)
+        .collect()
+}
+
 /// Pick the first `m` labeled records from each pathway.
 fn select_pathway_representatives(
     records: &[LoadedRecord],
@@ -359,9 +372,12 @@ mod tests {
 
     use crate::model::LoadedRecord;
 
+    use crate::data::{remap_sorted_ids, subset_records};
+    use std::collections::BTreeSet;
+
     use super::{
-        pathway_labels, pathway_prediction_is_correct, representative_pathways,
-        select_pathway_representatives,
+        pathway_labels, pathway_prediction_is_correct, pathway_representative_indices,
+        representative_pathways, select_pathway_representatives,
     };
 
     #[test]
@@ -427,5 +443,41 @@ mod tests {
             npc_pathway: npc_pathway.map(ToOwned::to_owned),
             spectrum: GenericSpectrum::<f32>::try_with_capacity(100.0, 0)?,
         })
+    }
+
+    #[test]
+    /// Selecting reps from the subsetted record list picks the same logical records.
+    fn pathway_representatives_are_stable_under_subsetting() -> Result<()> {
+        let records = vec![
+            labeled_record("unlabeled-a", None)?,
+            labeled_record("first-a", Some("pathway-a"))?,
+            labeled_record("unrelated", Some("pathway-c"))?,
+            labeled_record("first-b", Some("pathway-b"))?,
+            labeled_record("second-a", Some("pathway-a"))?,
+            labeled_record("second-b", Some("pathway-b"))?,
+        ];
+
+        let full_ids = pathway_representative_indices(&records, 1);
+        let full_picked: Vec<String> = full_ids
+            .iter()
+            .map(|&index| records[index].id.clone())
+            .collect();
+
+        let mut keep: BTreeSet<usize> = BTreeSet::new();
+        keep.insert(0);
+        keep.insert(2);
+        keep.extend(full_ids.iter().copied());
+
+        let subset = subset_records(records, &keep);
+        let remapped_ids = remap_sorted_ids(&full_ids, &keep);
+        let subset_reps = pathway_representative_indices(&subset, 1);
+        let subset_picked: Vec<String> = subset_reps
+            .iter()
+            .map(|&index| subset[index].id.clone())
+            .collect();
+
+        assert_eq!(subset_picked, full_picked);
+        assert_eq!(subset_reps, remapped_ids);
+        Ok(())
     }
 }

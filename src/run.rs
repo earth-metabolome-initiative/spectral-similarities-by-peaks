@@ -1,6 +1,6 @@
 //! Command execution for the experiment binary.
 
-use std::{fs, path::Path};
+use std::{collections::BTreeSet, fs, path::Path};
 
 use anyhow::{Context, Result, bail};
 use arrow_array::{RecordBatch, StringArray, UInt64Array};
@@ -26,7 +26,7 @@ use crate::{
     },
     neighbors::{SearchBatch, compute_neighbors},
     output::{self, GridArrays, OutputWriters},
-    pathway::{pathway_labels, score_pathway_representatives},
+    pathway::{pathway_labels, pathway_representative_indices, score_pathway_representatives},
     pathway_artifacts::{
         write_existing_pathway_prediction_artifacts, write_pathway_prediction_artifacts,
     },
@@ -216,6 +216,35 @@ fn load_scan_data(args: &ScanArgs, progress: &ScanProgress) -> Result<ScanData> 
     let query_ids = select_query_ids(records.len(), args.row_sample_size, args.seed);
     let reference_ids = select_reference_ids(records.len(), args.reference_sample_size, args.seed);
     let checkpoint_base = CheckpointBase::new(args, &records, &query_ids, &reference_ids);
+
+    let mut keep: BTreeSet<usize> = BTreeSet::new();
+    keep.extend(query_ids.iter().copied());
+    keep.extend(reference_ids.iter().copied());
+    if args.pathway_representatives_per_class > 0 {
+        keep.extend(pathway_representative_indices(
+            &records,
+            args.pathway_representatives_per_class,
+        ));
+    }
+
+    if keep.len() < records.len() {
+        let subset_progress = progress.spinner(format!(
+            "subsetting records to sampled working set ({} of {})",
+            keep.len(),
+            records.len()
+        ));
+        let records = data::subset_records(records, &keep);
+        let query_ids = data::remap_sorted_ids(&query_ids, &keep);
+        let reference_ids = data::remap_sorted_ids(&reference_ids, &keep);
+        subset_progress.finish();
+        return Ok(ScanData {
+            records,
+            query_ids,
+            reference_ids,
+            checkpoint_base,
+        });
+    }
+
     Ok(ScanData {
         records,
         query_ids,

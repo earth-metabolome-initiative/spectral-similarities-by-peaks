@@ -1,6 +1,6 @@
 //! Dataset retrieval and conversion into analysis records.
 
-use std::path::Path;
+use std::{collections::BTreeSet, path::Path};
 
 use anyhow::{Context, Result};
 use mascot_rs::prelude::{Dataset, MGFVec, MascotGenericFormat};
@@ -87,6 +87,42 @@ pub fn drop_record_spectra(records: &mut [LoadedRecord]) -> Result<()> {
         record.spectrum = GenericSpectrum::<f32>::try_with_capacity(1.0, 0)?;
     }
     Ok(())
+}
+
+/// Return the records whose original indices appear in `keep`, preserving order.
+#[must_use]
+pub fn subset_records(records: Vec<LoadedRecord>, keep: &BTreeSet<usize>) -> Vec<LoadedRecord> {
+    records
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, record)| keep.contains(&index).then_some(record))
+        .collect()
+}
+
+/// Translate a sorted slice of original indices into dense positions in `keep`.
+///
+/// Both inputs must be sorted ascending. Any index in `ids` that is missing
+/// from `keep` is silently skipped — callers must include needed ids in the
+/// keep set beforehand.
+#[must_use]
+pub fn remap_sorted_ids(ids: &[usize], keep: &BTreeSet<usize>) -> Vec<usize> {
+    let mut out = Vec::with_capacity(ids.len());
+    let mut keep_iter = keep.iter().copied().enumerate();
+    let mut current = keep_iter.next();
+    for &id in ids {
+        while let Some((new_index, old_index)) = current {
+            match old_index.cmp(&id) {
+                std::cmp::Ordering::Less => current = keep_iter.next(),
+                std::cmp::Ordering::Equal => {
+                    out.push(new_index);
+                    current = keep_iter.next();
+                    break;
+                }
+                std::cmp::Ordering::Greater => break,
+            }
+        }
+    }
+    out
 }
 
 /// Build the `Tokio` runtime required by the async download stack.
@@ -232,5 +268,65 @@ mod tests {
     /// Parse a single realistic `MGF` block.
     fn parse_mgf(raw: &str) -> Result<MascotGenericFormat<f32>> {
         Ok(raw.parse()?)
+    }
+
+    use std::collections::BTreeSet;
+
+    use crate::model::LoadedRecord;
+    use mass_spectrometry::prelude::GenericSpectrum;
+
+    use super::{remap_sorted_ids, subset_records};
+
+    #[test]
+    /// Remap returns the dense position of every kept id in the same order.
+    fn remap_sorted_ids_returns_dense_positions() {
+        let keep: BTreeSet<usize> = [1, 4, 7, 9].into_iter().collect();
+
+        assert_eq!(remap_sorted_ids(&[1, 7, 9], &keep), vec![0, 2, 3]);
+        assert_eq!(remap_sorted_ids(&[4], &keep), vec![1]);
+        assert!(remap_sorted_ids(&[], &keep).is_empty());
+    }
+
+    #[test]
+    /// Identity remap returns the input positions when keep covers every id.
+    fn remap_sorted_ids_is_identity_when_keep_covers_all() {
+        let keep: BTreeSet<usize> = (0..5).collect();
+        assert_eq!(
+            remap_sorted_ids(&[0, 1, 2, 3, 4], &keep),
+            vec![0, 1, 2, 3, 4]
+        );
+    }
+
+    #[test]
+    /// Missing ids in `keep` are silently skipped rather than producing junk.
+    fn remap_sorted_ids_skips_ids_outside_keep() {
+        let keep: BTreeSet<usize> = [2, 5, 8].into_iter().collect();
+        assert_eq!(remap_sorted_ids(&[2, 3, 5, 6, 8], &keep), vec![0, 1, 2]);
+    }
+
+    #[test]
+    /// Subset preserves original order and only keeps requested indices.
+    fn subset_records_preserves_order_and_filters() -> Result<()> {
+        let records = vec![
+            tiny_record("a")?,
+            tiny_record("b")?,
+            tiny_record("c")?,
+            tiny_record("d")?,
+        ];
+        let keep: BTreeSet<usize> = [0, 2].into_iter().collect();
+
+        let subset = subset_records(records, &keep);
+        let ids = subset.iter().map(|r| r.id.as_str()).collect::<Vec<_>>();
+        assert_eq!(ids, vec!["a", "c"]);
+        Ok(())
+    }
+
+    /// Build a minimal record for subset tests.
+    fn tiny_record(id: &str) -> Result<LoadedRecord> {
+        Ok(LoadedRecord {
+            id: id.to_string(),
+            npc_pathway: None,
+            spectrum: GenericSpectrum::<f32>::try_with_capacity(100.0, 0)?,
+        })
     }
 }
