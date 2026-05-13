@@ -187,7 +187,10 @@ fn run_scan(mut args: ScanArgs) -> Result<()> {
     scan_progress.finish();
 
     writers.finish(&progress)?;
-    write_pathway_prediction_artifacts(&args.output_dir, &progress)
+    if args.pathway_representatives_per_class > 0 {
+        write_pathway_prediction_artifacts(&args.output_dir, &progress)?;
+    }
+    Ok(())
 }
 
 /// Loaded dataset state shared by local scans, shard jobs, and finalization.
@@ -329,7 +332,10 @@ fn run_finalize_scan(mut args: FinalizeScanArgs) -> Result<()> {
     scan_progress.finish();
 
     writers.finish(&progress)?;
-    write_pathway_prediction_artifacts(&args.scan.output_dir, &progress)
+    if args.scan.pathway_representatives_per_class > 0 {
+        write_pathway_prediction_artifacts(&args.scan.output_dir, &progress)?;
+    }
+    Ok(())
 }
 
 /// Build per-config finalize artifacts for one similarity configuration.
@@ -428,7 +434,9 @@ fn run_finalize_merge(mut args: FinalizeMergeArgs) -> Result<()> {
     output::merge_grid_matrix_slices(&args.scan.output_dir, &config_names)?;
     grid_progress.finish();
 
-    write_pathway_prediction_artifacts(&args.scan.output_dir, &progress)?;
+    if args.scan.pathway_representatives_per_class > 0 {
+        write_pathway_prediction_artifacts(&args.scan.output_dir, &progress)?;
+    }
 
     if !args.keep_shard_dir {
         let cleanup_progress = progress.spinner("removing _finalize_shards/");
