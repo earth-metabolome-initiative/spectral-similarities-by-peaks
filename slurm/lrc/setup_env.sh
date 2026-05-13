@@ -152,16 +152,43 @@ link_scratch_directory "$REPO_DIR/logs" "$LOGS_DIR"
 
 # Lawrencium compute nodes lack system font packages, so the heatmap renderer
 # falls back to SPECTRAL_SIMILARITIES_FONT. Fetch DejaVu Sans into $HOME/fonts
-# once; the SLURM job scripts default the env var to this path.
+# once and re-fetch if the cached copy is invalid. The SLURM job scripts
+# default the env var to this path.
 FONT_DIR="$HOME/fonts"
 FONT_FILE="$FONT_DIR/DejaVuSans.ttf"
-FONT_URL="https://github.com/dejavu-fonts/dejavu-fonts/raw/master/build/DejaVuSans.ttf"
+DEJAVU_ZIP_URL="https://downloads.sourceforge.net/project/dejavu/dejavu/2.37/dejavu-fonts-ttf-2.37.zip"
+DEJAVU_ZIP_MEMBER="dejavu-fonts-ttf-2.37/ttf/DejaVuSans.ttf"
+FONT_MIN_BYTES=102400
+
+is_valid_ttf() {
+    local path="$1"
+    [ -s "$path" ] || return 1
+    local size
+    size=$(stat -c '%s' "$path" 2>/dev/null || echo 0)
+    [ "$size" -ge "$FONT_MIN_BYTES" ] || return 1
+    local magic
+    magic=$(head -c 4 "$path" | od -An -tx1 -N4 | tr -d ' \n')
+    [ "$magic" = "00010000" ]
+}
+
 mkdir -p "$FONT_DIR"
-if [ -s "$FONT_FILE" ]; then
-    echo "DejaVu Sans already present at $FONT_FILE"
+if is_valid_ttf "$FONT_FILE"; then
+    echo "DejaVu Sans already present and valid at $FONT_FILE"
 else
+    if [ -e "$FONT_FILE" ]; then
+        echo "Replacing invalid font at $FONT_FILE"
+        rm -f "$FONT_FILE"
+    fi
     echo "Fetching DejaVu Sans into $FONT_FILE"
-    curl --proto '=https' --tlsv1.2 -fsSL -o "$FONT_FILE" "$FONT_URL"
+    tmp_zip="$(mktemp)"
+    curl --proto '=https' --tlsv1.2 -fsSL -o "$tmp_zip" "$DEJAVU_ZIP_URL"
+    unzip -p "$tmp_zip" "$DEJAVU_ZIP_MEMBER" > "$FONT_FILE"
+    rm -f "$tmp_zip"
+    if ! is_valid_ttf "$FONT_FILE"; then
+        echo "ERROR: $FONT_FILE failed TTF validation after download" >&2
+        rm -f "$FONT_FILE"
+        exit 1
+    fi
 fi
 
 cd "$REPO_DIR"
