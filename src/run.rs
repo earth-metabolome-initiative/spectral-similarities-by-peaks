@@ -13,8 +13,8 @@ use rayon::prelude::*;
 use crate::{
     checkpoint::{self, CheckpointBase, RunFingerprint},
     cli::{
-        Cli, Commands, FinalizeScanArgs, PrefetchArgs, RenderHeatmapArgs,
-        RenderPathwayArtifactArgs, ScanArgs, ScanShardArgs,
+        Cli, Commands, FinalizeMergeArgs, FinalizeScanArgs, FinalizeShardArgs, PrefetchArgs,
+        RenderHeatmapArgs, RenderPathwayArtifactArgs, ScanArgs, ScanShardArgs,
     },
     data::{self, load_dataset_records, load_records},
     distribution::{
@@ -48,6 +48,8 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::Scan(args) => run_scan(args),
         Commands::ScanShard(args) => run_scan_shard(args),
         Commands::FinalizeScan(args) => run_finalize_scan(args),
+        Commands::FinalizeShard(args) => run_finalize_shard(args),
+        Commands::FinalizeMerge(args) => run_finalize_merge(args),
         Commands::RenderHeatmaps(args) => run_render_heatmaps(&args),
         Commands::RenderPathwayArtifacts(args) => run_render_pathway_artifacts(&args),
     }
@@ -330,6 +332,155 @@ fn run_finalize_scan(mut args: FinalizeScanArgs) -> Result<()> {
     write_pathway_prediction_artifacts(&args.scan.output_dir, &progress)
 }
 
+/// Build per-config finalize artifacts for one similarity configuration.
+///
+/// # Errors
+///
+/// Returns an error if validation fails, the requested config index is
+/// out-of-range, expected distribution or pathway shards for the config are
+/// missing, or finalize processing fails.
+fn run_finalize_shard(mut args: FinalizeShardArgs) -> Result<()> {
+    args.scan.validate()?;
+    if args.config_index >= args.scan.similarity_configs.len() {
+        bail!(
+            "--config-index {} is outside the selected configs (len {})",
+            args.config_index,
+            args.scan.similarity_configs.len()
+        );
+    }
+    let config = args.scan.similarity_configs[args.config_index].clone();
+    let single = [config.clone()];
+    ensure_distribution_checkpoint_paths(&args.scan, &single)?;
+    ensure_pathway_shard_paths(&args.scan, &single)?;
+    fs::create_dir_all(&args.scan.output_dir)
+        .with_context(|| format!("creating {}", args.scan.output_dir.display()))?;
+
+    let progress = ScanProgress::new();
+    let data = load_scan_data(&args.scan, &progress)?;
+    let config_name = config.name();
+    let writer_progress =
+        progress.spinner(format!("opening output writers for {config_name} shard"));
+    let mut writers = OutputWriters::create_for_shard(&args.scan.output_dir, &config_name)?;
+    writer_progress.finish();
+    let scan_progress = progress.bar(
+        u64::try_from(PEAK_COUNT_GRID_SIZE).unwrap_or(u64::MAX),
+        format!("finalizing {config_name} shard"),
+    );
+    let inputs = ScanInputs {
+        args: &args.scan,
+        progress: &progress,
+        records: &data.records,
+        query_ids: &data.query_ids,
+        reference_ids: &data.reference_ids,
+        checkpoint_base: &data.checkpoint_base,
+        scan_progress: &scan_progress,
+    };
+
+    finalize_similarity_config(&inputs, &mut writers, &config)?;
+    scan_progress.finish();
+
+    let canonical_dir = args.scan.output_dir.clone();
+    writers.finish_with_mode(
+        output::FinishMode::PerConfigShard {
+            canonical_dir: &canonical_dir,
+        },
+        &progress,
+    )
+}
+
+/// Concatenate per-config shard outputs into the canonical finalize artifacts.
+///
+/// # Errors
+///
+/// Returns an error when any per-config shard directory is missing, Parquet
+/// concatenation fails, or the trailing pathway-prediction artifact build
+/// fails.
+fn run_finalize_merge(mut args: FinalizeMergeArgs) -> Result<()> {
+    args.scan.validate()?;
+    fs::create_dir_all(&args.scan.output_dir)
+        .with_context(|| format!("creating {}", args.scan.output_dir.display()))?;
+
+    let progress = ScanProgress::new();
+    let config_names: Vec<String> = args
+        .scan
+        .similarity_configs
+        .iter()
+        .map(SimilarityConfig::name)
+        .collect();
+
+    let check_progress = progress.spinner("validating per-config shard outputs");
+    ensure_per_config_shard_outputs(
+        &args.scan.output_dir,
+        &config_names,
+        args.scan.pathway_representatives_per_class > 0,
+    )?;
+    check_progress.finish();
+
+    let merge_progress = progress.spinner("concatenating per-config Parquet outputs");
+    output::merge_per_config_parquets(
+        &args.scan.output_dir,
+        &config_names,
+        args.scan.pathway_representatives_per_class > 0,
+    )?;
+    merge_progress.finish();
+
+    let grid_progress = progress.spinner("stacking grid-matrix slices into distribution_grid.npz");
+    output::merge_grid_matrix_slices(&args.scan.output_dir, &config_names)?;
+    grid_progress.finish();
+
+    write_pathway_prediction_artifacts(&args.scan.output_dir, &progress)?;
+
+    if !args.keep_shard_dir {
+        let cleanup_progress = progress.spinner("removing _finalize_shards/");
+        let shard_root = args.scan.output_dir.join(output::FINALIZE_SHARD_DIR);
+        if shard_root.is_dir() {
+            fs::remove_dir_all(&shard_root)
+                .with_context(|| format!("removing {}", shard_root.display()))?;
+        }
+        cleanup_progress.finish();
+    }
+
+    Ok(())
+}
+
+/// Verify every per-config shard wrote the expected outputs before merging.
+fn ensure_per_config_shard_outputs(
+    output_dir: &Path,
+    config_names: &[String],
+    include_pathway_outputs: bool,
+) -> Result<()> {
+    let mut missing: Vec<String> = Vec::new();
+    let mut required: Vec<&str> = vec![
+        "distribution_summary.parquet",
+        "distribution_histograms.parquet",
+        "distribution_tests.parquet",
+        "distribution_grid.parquet",
+        "grid_matrix.bincode.zst",
+    ];
+    if include_pathway_outputs {
+        required.push("pathway_scores.parquet");
+        required.push("pathway_predictions.parquet");
+    }
+    for config_name in config_names {
+        let shard_dir = output::shard_directory(output_dir, config_name);
+        for file_name in &required {
+            let path = shard_dir.join(file_name);
+            if !path.is_file() {
+                missing.push(format!("{config_name}/{file_name}"));
+            }
+        }
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        bail!(
+            "missing per-config shard outputs under {}/_finalize_shards: {}",
+            output_dir.display(),
+            missing.join(", ")
+        );
+    }
+}
+
 /// One selected shard from the two-dimensional config/peak grid.
 struct ShardAssignment {
     /// Similarity configuration to evaluate.
@@ -396,8 +547,15 @@ fn validate_peak_count(peak_count: usize) -> Result<()> {
 
 /// Fail early when finalization is missing expected distribution checkpoint files.
 fn ensure_expected_distribution_checkpoint_paths(args: &ScanArgs) -> Result<()> {
-    let missing = args
-        .similarity_configs
+    ensure_distribution_checkpoint_paths(args, &args.similarity_configs)
+}
+
+/// Fail early when any of the supplied configs is missing a distribution shard.
+fn ensure_distribution_checkpoint_paths(
+    args: &ScanArgs,
+    configs: &[SimilarityConfig],
+) -> Result<()> {
+    let missing = configs
         .iter()
         .flat_map(|config| {
             let config_name = config.name();
@@ -427,11 +585,15 @@ fn ensure_expected_distribution_checkpoint_paths(args: &ScanArgs) -> Result<()> 
 
 /// Fail early when finalization is missing expected pathway shard files.
 fn ensure_expected_pathway_shard_paths(args: &ScanArgs) -> Result<()> {
+    ensure_pathway_shard_paths(args, &args.similarity_configs)
+}
+
+/// Fail early when any of the supplied configs is missing a pathway shard.
+fn ensure_pathway_shard_paths(args: &ScanArgs, configs: &[SimilarityConfig]) -> Result<()> {
     if args.pathway_representatives_per_class == 0 {
         return Ok(());
     }
-    let missing = args
-        .similarity_configs
+    let missing = configs
         .iter()
         .flat_map(|config| {
             let config_name = config.name();
@@ -1266,6 +1428,8 @@ mod tests {
             Commands::Prefetch(_)
             | Commands::ScanShard(_)
             | Commands::FinalizeScan(_)
+            | Commands::FinalizeShard(_)
+            | Commands::FinalizeMerge(_)
             | Commands::RenderHeatmaps(_)
             | Commands::RenderPathwayArtifacts(_) => {
                 anyhow::bail!("expected scan command")
@@ -1300,6 +1464,8 @@ mod tests {
             Commands::Prefetch(_)
             | Commands::Scan(_)
             | Commands::FinalizeScan(_)
+            | Commands::FinalizeShard(_)
+            | Commands::FinalizeMerge(_)
             | Commands::RenderHeatmaps(_)
             | Commands::RenderPathwayArtifacts(_) => anyhow::bail!("expected scan-shard command"),
         }
@@ -1339,6 +1505,8 @@ mod tests {
             Commands::Prefetch(_)
             | Commands::Scan(_)
             | Commands::FinalizeScan(_)
+            | Commands::FinalizeShard(_)
+            | Commands::FinalizeMerge(_)
             | Commands::RenderHeatmaps(_)
             | Commands::RenderPathwayArtifacts(_) => anyhow::bail!("expected scan-shard command"),
         }

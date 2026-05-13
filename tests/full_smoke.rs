@@ -106,6 +106,59 @@ fn shard_scan_finalize_smoke_test_produces_expected_artifacts() -> Result<(), Bo
 }
 
 #[test]
+/// Sharded finalize (one shard per config) followed by a merge produces the
+/// same artifact family and row counts as the single-process finalize-scan.
+fn sharded_finalize_smoke_test_matches_single_process() -> Result<(), Box<dyn Error>> {
+    let root = smoke_root()?;
+    let data_dir = root.join("data");
+    let output_dir = root.join("out");
+    fs::create_dir_all(&data_dir)?;
+
+    for shard_index in 0..128 {
+        let cli = smoke_single_config_shard_cli(&data_dir, &output_dir, shard_index)?;
+        run::run(cli)?;
+    }
+
+    let cli = smoke_single_config_finalize_shard_cli(&data_dir, &output_dir, 0)?;
+    run::run(cli)?;
+
+    let cli = smoke_single_config_finalize_merge_cli(&data_dir, &output_dir)?;
+    run::run(cli)?;
+
+    assert_parquet_rows(&output_dir.join("distribution_summary.parquet"), 128)?;
+    assert_parquet_rows(&output_dir.join("distribution_histograms.parquet"), 384)?;
+    assert_parquet_rows(&output_dir.join("distribution_tests.parquet"), 127)?;
+    assert_parquet_rows(&output_dir.join("distribution_grid.parquet"), 16_384)?;
+    assert_parquet_rows(&output_dir.join("distribution_grid_configs.parquet"), 1)?;
+    assert_parquet_rows(&output_dir.join("pathway_scores.parquet"), 2_048)?;
+    assert_parquet_rows(&output_dir.join("pathway_predictions.parquet"), 512)?;
+    assert_parquet_nonempty(&output_dir.join("pathway_prediction_metrics.parquet"))?;
+    assert_parquet_rows(
+        &output_dir.join("pathway_prediction_distribution_grid.parquet"),
+        16_384,
+    )?;
+    assert_parquet_rows(
+        &output_dir.join("pathway_prediction_distribution_grid_configs.parquet"),
+        1,
+    )?;
+    assert_grid_npz_shapes_with_configs(&output_dir.join("distribution_grid.npz"), 1)?;
+    assert_pathway_grid_npz_shapes_with_configs(
+        &output_dir.join("pathway_prediction_distribution_grid.npz"),
+        1,
+    )?;
+    assert_single_config_heatmap_artifacts(&output_dir, "cosine_mz0.000_int1.000")?;
+    assert_single_config_pathway_prediction_artifacts(&output_dir, "cosine_mz0.000_int1.000")?;
+
+    assert!(
+        !output_dir.join("_finalize_shards").exists(),
+        "finalize-merge should remove _finalize_shards/ on success"
+    );
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 /// When the heatmap renderer cannot find a font the finalize step must fail,
 /// but the per-config Parquet artifacts and dense matrix outputs must still
 /// land on disk fully closed and openable. Spawned in a subprocess so the
@@ -317,6 +370,88 @@ fn smoke_single_config_finalize_cli(
     Ok(Cli::try_parse_from([
         "spectral-similarities-by-peaks",
         "finalize-scan",
+        "--dataset",
+        "synthetic-smoke",
+        "--data-dir",
+        data_dir
+            .to_str()
+            .ok_or("temporary data directory path is not valid UTF-8")?,
+        "--output-dir",
+        output_dir
+            .to_str()
+            .ok_or("temporary output directory path is not valid UTF-8")?,
+        "--similarity-config",
+        "cosine:0.0:1.0",
+        "--neighbors",
+        "2",
+        "--mz-tolerance",
+        "0.05",
+        "--histogram-bins",
+        "3",
+        "--pathway-representatives-per-class",
+        "1",
+        "--row-sample-size",
+        "4",
+        "--reference-sample-size",
+        "6",
+        "--max-spectra",
+        "8",
+        "--seed",
+        "42",
+    ])?)
+}
+
+/// Build the synthetic finalize-shard command for the sharded smoke test.
+fn smoke_single_config_finalize_shard_cli(
+    data_dir: &Path,
+    output_dir: &Path,
+    config_index: usize,
+) -> Result<Cli, Box<dyn Error>> {
+    let config_index = config_index.to_string();
+    Ok(Cli::try_parse_from([
+        "spectral-similarities-by-peaks",
+        "finalize-shard",
+        "--dataset",
+        "synthetic-smoke",
+        "--data-dir",
+        data_dir
+            .to_str()
+            .ok_or("temporary data directory path is not valid UTF-8")?,
+        "--output-dir",
+        output_dir
+            .to_str()
+            .ok_or("temporary output directory path is not valid UTF-8")?,
+        "--similarity-config",
+        "cosine:0.0:1.0",
+        "--neighbors",
+        "2",
+        "--mz-tolerance",
+        "0.05",
+        "--histogram-bins",
+        "3",
+        "--pathway-representatives-per-class",
+        "1",
+        "--row-sample-size",
+        "4",
+        "--reference-sample-size",
+        "6",
+        "--max-spectra",
+        "8",
+        "--seed",
+        "42",
+        "--config-index",
+        config_index.as_str(),
+    ])?)
+}
+
+/// Build the synthetic finalize-merge command for the sharded smoke test.
+fn smoke_single_config_finalize_merge_cli(
+    data_dir: &Path,
+    output_dir: &Path,
+) -> Result<Cli, Box<dyn Error>> {
+    Ok(Cli::try_parse_from([
+        "spectral-similarities-by-peaks",
+        "finalize-merge",
         "--dataset",
         "synthetic-smoke",
         "--data-dir",

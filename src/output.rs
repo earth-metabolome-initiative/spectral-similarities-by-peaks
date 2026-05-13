@@ -13,6 +13,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use ndarray::{Array1, Array3};
 use ndarray_npy::NpzWriter;
 use parquet::arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder};
+use serde::{Deserialize, Serialize};
 
 use crate::model::{
     DistributionComparison, DistributionHistogramBin, DistributionSummary, PEAK_COUNT_GRID_SIZE,
@@ -23,6 +24,12 @@ use crate::visualize::write_heatmaps;
 
 /// Directory under an output directory that stores pathway shard Parquet files.
 const PATHWAY_SHARD_DIR: &str = "pathway_shards";
+/// Directory under an output directory that stores per-config finalize shards.
+pub const FINALIZE_SHARD_DIR: &str = "_finalize_shards";
+/// File name for the serialized grid-matrix slice inside a finalize shard.
+const GRID_MATRIX_SLICE_FILE: &str = "grid_matrix.bincode.zst";
+/// Zstandard compression level for the grid-matrix slice.
+const GRID_MATRIX_COMPRESSION_LEVEL: i32 = 6;
 /// File name for per-shard pathway similarity-sum scores.
 const PATHWAY_SCORE_SHARD_FILE: &str = "pathway_scores.parquet";
 /// File name for per-shard pathway best-label predictions.
@@ -106,6 +113,21 @@ pub struct OutputWriters {
     grid_matrices: GridMatrixBuffer,
 }
 
+/// Layout in which an `OutputWriters` instance was finished.
+#[derive(Clone, Copy)]
+pub enum FinishMode<'a> {
+    /// Write `distribution_grid.npz`, `distribution_grid_configs.parquet`,
+    /// and heatmaps next to the per-config Parquet files.
+    Aggregate,
+    /// Save a per-config grid-matrix slice in the shard directory instead of
+    /// writing the aggregate npz/configs, and render heatmaps under the
+    /// canonical output directory rather than the shard subdirectory.
+    PerConfigShard {
+        /// Canonical (non-shard) output directory where heatmaps should land.
+        canonical_dir: &'a Path,
+    },
+}
+
 impl OutputWriters {
     /// Create every output writer under the scan output directory.
     pub fn create(output_dir: &Path) -> Result<Self> {
@@ -145,6 +167,20 @@ impl OutputWriters {
             pending_grid_comparisons: Vec::new(),
             grid_matrices: GridMatrixBuffer::default(),
         })
+    }
+
+    /// Create writers under `<output_dir>/_finalize_shards/<config_name>/` for
+    /// the per-config-shard finalize path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the shard directory cannot be created or any
+    /// Parquet writer cannot be opened.
+    pub fn create_for_shard(output_dir: &Path, config_name: &str) -> Result<Self> {
+        let shard_dir = shard_directory(output_dir, config_name);
+        fs::create_dir_all(&shard_dir)
+            .with_context(|| format!("creating {}", shard_dir.display()))?;
+        Self::create(&shard_dir)
     }
 
     /// Write one distribution summary row.
@@ -211,11 +247,29 @@ impl OutputWriters {
 
     /// Finalize all Parquet files and write dense grid matrices.
     ///
+    /// Convenience wrapper around `finish_with_mode` for the single-process
+    /// (aggregate) finalize path.
+    ///
+    /// # Errors
+    ///
+    /// See `finish_with_mode`.
+    pub fn finish(self, progress: &ScanProgress) -> Result<()> {
+        self.finish_with_mode(FinishMode::Aggregate, progress)
+    }
+
+    /// Finalize all Parquet files in the configured mode.
+    ///
     /// Parquet writers are closed before the heatmap renderer runs so a
     /// rendering failure (for example, a missing system font on a shared
     /// cluster) cannot leave the per-config Parquet artifacts truncated at
     /// their 4-byte header.
-    pub fn finish(mut self, progress: &ScanProgress) -> Result<()> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if flushing buffered rows, building dense arrays,
+    /// closing any Parquet writer, saving the grid-matrix slice, or rendering
+    /// heatmaps fails.
+    pub fn finish_with_mode(mut self, mode: FinishMode<'_>, progress: &ScanProgress) -> Result<()> {
         let adjacent_progress = progress.spinner("flushing adjacent comparison rows");
         self.flush_adjacent_comparisons()?;
         adjacent_progress.finish();
@@ -224,9 +278,26 @@ impl OutputWriters {
         self.flush_grid_comparisons()?;
         grid_progress.finish();
 
-        let arrays = self
-            .grid_matrices
-            .build_and_save(&self.output_dir, progress)?;
+        let matrix_progress = progress.spinner("building dense distribution matrices");
+        let arrays = build_grid_arrays(&self.grid_matrices)?;
+        matrix_progress.finish();
+
+        match mode {
+            FinishMode::Aggregate => {
+                let npz_progress = progress.spinner("writing distribution_grid.npz");
+                write_grid_npz(&self.output_dir, &arrays)?;
+                npz_progress.finish();
+
+                let config_progress = progress.spinner("writing distribution_grid_configs.parquet");
+                write_grid_configs(&self.output_dir, &self.grid_matrices)?;
+                config_progress.finish();
+            }
+            FinishMode::PerConfigShard { .. } => {
+                let slice_progress = progress.spinner("saving grid-matrix shard slice");
+                save_grid_matrix_slice(&self.output_dir, &self.grid_matrices)?;
+                slice_progress.finish();
+            }
+        }
 
         let close_progress = progress.spinner("closing Parquet writers");
         self.summary.close()?;
@@ -237,12 +308,11 @@ impl OutputWriters {
         self.pathway_prediction.close()?;
         close_progress.finish();
 
-        write_heatmaps(
-            &self.output_dir,
-            &self.grid_matrices.configs,
-            &arrays,
-            progress,
-        )
+        let heatmap_dir = match mode {
+            FinishMode::Aggregate => self.output_dir.as_path(),
+            FinishMode::PerConfigShard { canonical_dir } => canonical_dir,
+        };
+        write_heatmaps(heatmap_dir, &self.grid_matrices.configs, &arrays, progress)
     }
 }
 
@@ -339,7 +409,7 @@ fn rename_parquet(temporary_path: &Path, path: &Path) -> std::io::Result<()> {
 }
 
 /// Dense comparison grid arrays accumulated across similarity configs.
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct GridMatrixBuffer {
     /// Similarity configuration labels in first-seen order.
     configs: Vec<String>,
@@ -381,23 +451,34 @@ impl GridMatrixBuffer {
         self.configs.len() - 1
     }
 
-    /// Build dense `NumPy` matrix arrays, write the npz and config metadata,
-    /// and return the in-memory arrays so the caller can feed them to the
-    /// heatmap renderer after closing the Parquet writers.
-    fn build_and_save(&self, output_dir: &Path, progress: &ScanProgress) -> Result<GridArrays> {
-        let matrix_progress = progress.spinner("building dense distribution matrices");
-        let arrays = build_grid_arrays(self)?;
-        matrix_progress.finish();
-
-        let npz_progress = progress.spinner("writing distribution_grid.npz");
-        write_grid_npz(output_dir, &arrays)?;
-        npz_progress.finish();
-
-        let config_progress = progress.spinner("writing distribution_grid_configs.parquet");
-        write_grid_configs(output_dir, self)?;
-        config_progress.finish();
-
-        Ok(arrays)
+    /// Append all entries from another buffer, reindexing their `config_index`
+    /// to point at this buffer's existing or freshly-inserted slot for the
+    /// other buffer's single config.
+    ///
+    /// The other buffer must describe exactly one config — that's what
+    /// per-config shards produce. Any wider buffer is rejected.
+    fn extend_from_shard(&mut self, other: Self) -> Result<()> {
+        if other.configs.len() != 1 {
+            bail!(
+                "expected a one-config grid-matrix slice, got {} configs",
+                other.configs.len()
+            );
+        }
+        let canonical_index = self.configs.len();
+        self.configs.push(other.configs[0].clone());
+        self.metrics.push(other.metrics[0].clone());
+        for entry in other.entries {
+            self.entries.push(GridMatrixEntry {
+                config_index: canonical_index,
+                row: entry.row,
+                column: entry.column,
+                mean_delta: entry.mean_delta,
+                ks_statistic: entry.ks_statistic,
+                ks_pvalue_asymptotic: entry.ks_pvalue_asymptotic,
+                wasserstein_1d: entry.wasserstein_1d,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -416,6 +497,7 @@ pub struct GridArrays {
 }
 
 /// One dense matrix cell.
+#[derive(Serialize, Deserialize)]
 struct GridMatrixEntry {
     /// First axis index for the similarity configuration.
     config_index: usize,
@@ -474,6 +556,148 @@ fn write_grid_npz(output_dir: &Path, arrays: &GridArrays) -> Result<()> {
     writer.add_array("wasserstein_1d", &arrays.wasserstein_1d)?;
     writer.finish()?;
     Ok(())
+}
+
+/// Return the per-config shard subdirectory for a finalize shard.
+#[must_use]
+pub fn shard_directory(output_dir: &Path, config_name: &str) -> PathBuf {
+    output_dir.join(FINALIZE_SHARD_DIR).join(config_name)
+}
+
+/// Return the canonical path to a per-config grid-matrix slice file.
+#[must_use]
+pub fn grid_matrix_slice_path(output_dir: &Path, config_name: &str) -> PathBuf {
+    shard_directory(output_dir, config_name).join(GRID_MATRIX_SLICE_FILE)
+}
+
+/// Serialize a grid-matrix buffer to a per-config slice file.
+fn save_grid_matrix_slice(shard_dir: &Path, buffer: &GridMatrixBuffer) -> Result<()> {
+    use std::io::Write;
+    let path = shard_dir.join(GRID_MATRIX_SLICE_FILE);
+    let bytes = bincode::serialize(buffer)
+        .with_context(|| format!("encoding grid-matrix slice for {}", path.display()))?;
+    let file = fs::File::create(&path).with_context(|| format!("creating {}", path.display()))?;
+    let mut writer = zstd::Encoder::new(file, GRID_MATRIX_COMPRESSION_LEVEL)
+        .with_context(|| format!("opening zstd encoder for {}", path.display()))?;
+    writer
+        .write_all(&bytes)
+        .with_context(|| format!("writing {}", path.display()))?;
+    writer
+        .finish()
+        .with_context(|| format!("finalizing zstd stream for {}", path.display()))?;
+    Ok(())
+}
+
+/// Reconstitute a per-config grid-matrix slice from disk.
+fn load_grid_matrix_slice(path: &Path) -> Result<GridMatrixBuffer> {
+    use std::io::Read;
+    let file = fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let mut decoder = zstd::Decoder::new(file)
+        .with_context(|| format!("opening zstd decoder for {}", path.display()))?;
+    let mut bytes = Vec::new();
+    decoder
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("reading {}", path.display()))?;
+    let buffer: GridMatrixBuffer = bincode::deserialize(&bytes)
+        .with_context(|| format!("decoding grid-matrix slice {}", path.display()))?;
+    Ok(buffer)
+}
+
+/// Stack per-config grid-matrix slices into the canonical aggregate npz and
+/// `distribution_grid_configs.parquet` files.
+///
+/// # Errors
+///
+/// Returns an error if any slice fails to load, contains the wrong number of
+/// configs, or the canonical npz/configs files cannot be written.
+pub fn merge_grid_matrix_slices(output_dir: &Path, config_names: &[String]) -> Result<()> {
+    let mut combined = GridMatrixBuffer::default();
+    for config_name in config_names {
+        let slice_path = grid_matrix_slice_path(output_dir, config_name);
+        let slice = load_grid_matrix_slice(&slice_path)?;
+        combined.extend_from_shard(slice)?;
+    }
+    let arrays = build_grid_arrays(&combined)?;
+    write_grid_npz(output_dir, &arrays)?;
+    write_grid_configs(output_dir, &combined)?;
+    Ok(())
+}
+
+/// Concatenate each shard's per-config Parquets into the canonical aggregate
+/// files.
+///
+/// The shard layout `<output_dir>/_finalize_shards/<config>/<file>.parquet` is
+/// expected. Pathway Parquets are concatenated only when pathway scoring was
+/// enabled for the run.
+///
+/// # Errors
+///
+/// Returns an error if any source Parquet cannot be read or any destination
+/// cannot be written.
+pub fn merge_per_config_parquets(
+    output_dir: &Path,
+    config_names: &[String],
+    include_pathway_outputs: bool,
+) -> Result<()> {
+    let sources_for = |file_name: &str| -> Vec<PathBuf> {
+        config_names
+            .iter()
+            .map(|config| shard_directory(output_dir, config).join(file_name))
+            .collect()
+    };
+    let merge_one = |file_name: &str, schema: SchemaRef| -> Result<()> {
+        concat_parquet(&sources_for(file_name), &output_dir.join(file_name), schema)
+    };
+
+    merge_one(
+        "distribution_summary.parquet",
+        distribution_summary_schema(),
+    )?;
+    merge_one("distribution_histograms.parquet", histogram_schema())?;
+    merge_one(
+        "distribution_tests.parquet",
+        distribution_comparison_schema(),
+    )?;
+    merge_one(
+        "distribution_grid.parquet",
+        distribution_comparison_schema(),
+    )?;
+    if include_pathway_outputs {
+        merge_one("pathway_scores.parquet", pathway_score_schema())?;
+        merge_one("pathway_predictions.parquet", pathway_prediction_schema())?;
+    }
+    Ok(())
+}
+
+/// Concatenate a sequence of Parquet files with the same schema into one.
+///
+/// Used by `finalize-merge` to stitch per-config shard Parquets into the
+/// canonical aggregate file. Empty input files (just the header) and missing
+/// files are tolerated.
+///
+/// # Errors
+///
+/// Returns an error if any source file fails to open or any batch cannot be
+/// written into the destination writer.
+pub fn concat_parquet(sources: &[PathBuf], destination: &Path, schema: SchemaRef) -> Result<()> {
+    let mut writer = ParquetTableWriter::create_at_path(destination, schema)?;
+    for source in sources {
+        if !source.is_file() {
+            continue;
+        }
+        let file =
+            fs::File::open(source).with_context(|| format!("opening {}", source.display()))?;
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+            .with_context(|| format!("reading metadata from {}", source.display()))?
+            .build()
+            .with_context(|| format!("building reader for {}", source.display()))?;
+        for batch in reader {
+            let batch =
+                batch.with_context(|| format!("reading row group from {}", source.display()))?;
+            writer.write(&batch)?;
+        }
+    }
+    writer.close()
 }
 
 /// Write config-axis metadata for `distribution_grid.npz`.

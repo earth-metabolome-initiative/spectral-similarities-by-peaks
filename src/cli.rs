@@ -49,6 +49,10 @@ pub enum Commands {
     ScanShard(ScanShardArgs),
     /// Build final artifacts from completed distribution shards.
     FinalizeScan(FinalizeScanArgs),
+    /// Build per-config final artifacts for one similarity configuration.
+    FinalizeShard(FinalizeShardArgs),
+    /// Merge per-config shard outputs into the top-level finalize artifacts.
+    FinalizeMerge(FinalizeMergeArgs),
     /// Re-render heatmaps from an existing scan output directory.
     RenderHeatmaps(RenderHeatmapArgs),
     /// Rebuild pathway prediction summaries and plots from an existing scan.
@@ -146,6 +150,28 @@ pub struct FinalizeScanArgs {
     /// Shared scan configuration.
     #[command(flatten)]
     pub scan: ScanArgs,
+}
+
+#[derive(Debug, Parser)]
+/// Arguments for the `finalize-shard` subcommand.
+pub struct FinalizeShardArgs {
+    /// Shared scan configuration.
+    #[command(flatten)]
+    pub scan: ScanArgs,
+    /// Zero-based index into the selected similarity configurations.
+    #[arg(long)]
+    pub config_index: usize,
+}
+
+#[derive(Debug, Parser)]
+/// Arguments for the `finalize-merge` subcommand.
+pub struct FinalizeMergeArgs {
+    /// Shared scan configuration.
+    #[command(flatten)]
+    pub scan: ScanArgs,
+    /// Retain the per-config shard directory after merging.
+    #[arg(long, default_value_t = false)]
+    pub keep_shard_dir: bool,
 }
 
 #[derive(Debug, Parser)]
