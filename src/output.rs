@@ -210,6 +210,11 @@ impl OutputWriters {
     }
 
     /// Finalize all Parquet files and write dense grid matrices.
+    ///
+    /// Parquet writers are closed before the heatmap renderer runs so a
+    /// rendering failure (for example, a missing system font on a shared
+    /// cluster) cannot leave the per-config Parquet artifacts truncated at
+    /// their 4-byte header.
     pub fn finish(mut self, progress: &ScanProgress) -> Result<()> {
         let adjacent_progress = progress.spinner("flushing adjacent comparison rows");
         self.flush_adjacent_comparisons()?;
@@ -219,7 +224,9 @@ impl OutputWriters {
         self.flush_grid_comparisons()?;
         grid_progress.finish();
 
-        self.grid_matrices.write(&self.output_dir, progress)?;
+        let arrays = self
+            .grid_matrices
+            .build_and_save(&self.output_dir, progress)?;
 
         let close_progress = progress.spinner("closing Parquet writers");
         self.summary.close()?;
@@ -229,7 +236,13 @@ impl OutputWriters {
         self.pathway_score.close()?;
         self.pathway_prediction.close()?;
         close_progress.finish();
-        Ok(())
+
+        write_heatmaps(
+            &self.output_dir,
+            &self.grid_matrices.configs,
+            &arrays,
+            progress,
+        )
     }
 }
 
@@ -368,8 +381,10 @@ impl GridMatrixBuffer {
         self.configs.len() - 1
     }
 
-    /// Write dense `NumPy` matrix arrays plus config metadata.
-    fn write(&self, output_dir: &Path, progress: &ScanProgress) -> Result<()> {
+    /// Build dense `NumPy` matrix arrays, write the npz and config metadata,
+    /// and return the in-memory arrays so the caller can feed them to the
+    /// heatmap renderer after closing the Parquet writers.
+    fn build_and_save(&self, output_dir: &Path, progress: &ScanProgress) -> Result<GridArrays> {
         let matrix_progress = progress.spinner("building dense distribution matrices");
         let arrays = build_grid_arrays(self)?;
         matrix_progress.finish();
@@ -382,7 +397,7 @@ impl GridMatrixBuffer {
         write_grid_configs(output_dir, self)?;
         config_progress.finish();
 
-        write_heatmaps(output_dir, &self.configs, &arrays, progress)
+        Ok(arrays)
     }
 }
 

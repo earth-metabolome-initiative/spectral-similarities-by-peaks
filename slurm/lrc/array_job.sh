@@ -46,6 +46,7 @@ fi
 
 export RAYON_NUM_THREADS="${SLURM_CPUS_ON_NODE:-$(nproc)}"
 export RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
+export SPECTRAL_SIMILARITIES_FONT="${SPECTRAL_SIMILARITIES_FONT:-$HOME/fonts/DejaVuSans.ttf}"
 
 echo "Host:        $(hostname)"
 echo "Start:       $(date)"

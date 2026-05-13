@@ -150,6 +150,20 @@ link_scratch_directory "$REPO_DIR/data" "$DATA_DIR"
 link_scratch_directory "$REPO_DIR/results" "$RESULTS_DIR"
 link_scratch_directory "$REPO_DIR/logs" "$LOGS_DIR"
 
+# Lawrencium compute nodes lack system font packages, so the heatmap renderer
+# falls back to SPECTRAL_SIMILARITIES_FONT. Fetch DejaVu Sans into $HOME/fonts
+# once; the SLURM job scripts default the env var to this path.
+FONT_DIR="$HOME/fonts"
+FONT_FILE="$FONT_DIR/DejaVuSans.ttf"
+FONT_URL="https://github.com/dejavu-fonts/dejavu-fonts/raw/master/build/DejaVuSans.ttf"
+mkdir -p "$FONT_DIR"
+if [ -s "$FONT_FILE" ]; then
+    echo "DejaVu Sans already present at $FONT_FILE"
+else
+    echo "Fetching DejaVu Sans into $FONT_FILE"
+    curl --proto '=https' --tlsv1.2 -fsSL -o "$FONT_FILE" "$FONT_URL"
+fi
+
 cd "$REPO_DIR"
 # Build a binary portable across Lawrencium partitions. The login node has
 # newer CPU instructions than the lr4 debug nodes, so target-cpu=native breaks

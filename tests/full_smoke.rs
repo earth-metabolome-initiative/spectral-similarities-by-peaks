@@ -105,6 +105,99 @@ fn shard_scan_finalize_smoke_test_produces_expected_artifacts() -> Result<(), Bo
     Ok(())
 }
 
+#[test]
+/// When the heatmap renderer cannot find a font the finalize step must fail,
+/// but the per-config Parquet artifacts and dense matrix outputs must still
+/// land on disk fully closed and openable. Spawned in a subprocess so the
+/// plotters font cache (a process-wide `OnceLock`) stays isolated.
+fn distribution_parquets_survive_heatmap_font_failure() -> Result<(), Box<dyn Error>> {
+    let root = smoke_root()?;
+    let data_dir = root.join("data");
+    let output_dir = root.join("out");
+    fs::create_dir_all(&data_dir)?;
+
+    for shard_index in 0..128 {
+        let cli = smoke_single_config_shard_cli(&data_dir, &output_dir, shard_index)?;
+        run::run(cli)?;
+    }
+
+    let data_dir_str = data_dir
+        .to_str()
+        .ok_or("temporary data directory path is not valid UTF-8")?;
+    let output_dir_str = output_dir
+        .to_str()
+        .ok_or("temporary output directory path is not valid UTF-8")?;
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_spectral-similarities-by-peaks"))
+        .env(
+            "SPECTRAL_SIMILARITIES_FONT",
+            "/this/path/does/not/exist.ttf",
+        )
+        .args([
+            "finalize-scan",
+            "--dataset",
+            "synthetic-smoke",
+            "--data-dir",
+            data_dir_str,
+            "--output-dir",
+            output_dir_str,
+            "--similarity-config",
+            "cosine:0.0:1.0",
+            "--neighbors",
+            "2",
+            "--mz-tolerance",
+            "0.05",
+            "--histogram-bins",
+            "3",
+            "--pathway-representatives-per-class",
+            "1",
+            "--row-sample-size",
+            "4",
+            "--reference-sample-size",
+            "6",
+            "--max-spectra",
+            "8",
+            "--seed",
+            "42",
+        ])
+        .status()?;
+    assert!(
+        !status.success(),
+        "finalize must fail when the heatmap font is missing"
+    );
+
+    assert_parquet_rows(&output_dir.join("distribution_summary.parquet"), 128)?;
+    assert_parquet_rows(&output_dir.join("distribution_histograms.parquet"), 384)?;
+    assert_parquet_rows(&output_dir.join("distribution_tests.parquet"), 127)?;
+    assert_parquet_rows(&output_dir.join("distribution_grid.parquet"), 16_384)?;
+    assert_parquet_rows(&output_dir.join("distribution_grid_configs.parquet"), 1)?;
+    assert_parquet_rows(&output_dir.join("pathway_scores.parquet"), 2_048)?;
+    assert_parquet_rows(&output_dir.join("pathway_predictions.parquet"), 512)?;
+    assert!(
+        output_dir.join("distribution_grid.npz").is_file(),
+        "distribution_grid.npz must be written before heatmaps run"
+    );
+
+    let heatmaps_dir = output_dir.join("heatmaps");
+    let heatmap_files = if heatmaps_dir.is_dir() {
+        fs::read_dir(&heatmaps_dir).map_or(0, std::iter::Iterator::count)
+    } else {
+        0
+    };
+    assert_eq!(
+        heatmap_files, 0,
+        "heatmap renderer should not have produced any files"
+    );
+    assert!(
+        !output_dir
+            .join("pathway_prediction_metrics.parquet")
+            .exists(),
+        "pathway_prediction artifacts run after finalize and must not appear when finalize fails"
+    );
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
 /// Build the deterministic synthetic scan command used by the full smoke test.
 fn smoke_scan_cli(data_dir: &Path, output_dir: &Path) -> Result<Cli, Box<dyn Error>> {
     Ok(Cli::try_parse_from([
