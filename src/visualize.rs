@@ -272,7 +272,7 @@ where
         .margin(22)
         .x_label_area_size(48)
         .y_label_area_size(58)
-        .build_cartesian_2d(1_i32..x_end, 1_i32..y_end)
+        .build_cartesian_2d(0_i32..x_end, 0_i32..y_end)
         .map_err(plotters_error)?;
 
     chart
@@ -280,8 +280,22 @@ where
         .disable_mesh()
         .x_desc("Peak count B")
         .y_desc("Peak count A")
-        .x_labels(5)
-        .y_labels(5)
+        .x_labels(usize::try_from(x_end).unwrap_or(usize::MAX))
+        .y_labels(usize::try_from(y_end).unwrap_or(usize::MAX))
+        .x_label_formatter(&|value| {
+            if HEATMAP_AXIS_TICKS.contains(value) {
+                value.to_string()
+            } else {
+                String::new()
+            }
+        })
+        .y_label_formatter(&|value| {
+            if HEATMAP_AXIS_TICKS.contains(value) {
+                value.to_string()
+            } else {
+                String::new()
+            }
+        })
         .axis_desc_style(("sans-serif", 20))
         .label_style(("sans-serif", 16))
         .draw()
@@ -614,6 +628,9 @@ fn format_tick(value: f64) -> String {
 fn usize_to_i32(value: usize) -> Result<i32> {
     i32::try_from(value).context("plot coordinate does not fit i32")
 }
+
+/// Peak-count axis tick positions kept on every distribution heatmap.
+const HEATMAP_AXIS_TICKS: &[i32] = &[0, 32, 64, 96, 128];
 
 /// Return a filesystem-safe path component.
 pub fn sanitize_path_component(raw: &str) -> PathBuf {
