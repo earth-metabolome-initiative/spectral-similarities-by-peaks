@@ -19,10 +19,13 @@ use ndarray::{ArrayView2, ArrayView3, Axis};
 use plotters::{
     coord::Shift,
     prelude::{
-        BitMapBackend, ChartBuilder, DrawingArea, DrawingBackend, IntoDrawingArea, RGBColor,
+        BLACK, BitMapBackend, ChartBuilder, DrawingArea, DrawingBackend, IntoDrawingArea, RGBColor,
         Rectangle, SVGBackend, WHITE,
     },
-    style::{Color, FontStyle, register_font},
+    style::{
+        Color, FontStyle, IntoFont, register_font,
+        text_anchor::{HPos, Pos, VPos},
+    },
 };
 
 use crate::{
@@ -47,6 +50,14 @@ const SIGNED_LOG_LINEAR_FRACTION: f64 = 1.0e-3;
 
 /// Number of rendered metrics per similarity configuration.
 const HEATMAP_METRIC_COUNT: usize = 8;
+
+/// Horizontal padding between the right edge of the colorbar panel and the
+/// right-anchored colorbar label.
+const COLORBAR_LABEL_RIGHT_PAD: i32 = 16;
+/// Vertical position (pixels from the top of the colorbar panel) for the
+/// colorbar label's vertical center. Sits just above the colorbar top edge,
+/// which is at `margin_top = 90` pixels of the same panel.
+const COLORBAR_LABEL_TOP: i32 = 70;
 
 /// Environment variable that may point to a TrueType or OpenType font file.
 const HEATMAP_FONT_ENV_VAR: &str = "SPECTRAL_SIMILARITIES_FONT";
@@ -187,6 +198,7 @@ fn heatmap_metrics<'a>(
         HeatmapMetric {
             name: "mean_delta_linear",
             title: "Mean delta (linear scale)",
+            colorbar_label: "mean delta",
             values: mean_delta,
             scale: scales.mean_delta_linear,
             palette: colorous::RED_BLUE,
@@ -195,6 +207,7 @@ fn heatmap_metrics<'a>(
         HeatmapMetric {
             name: "mean_delta_log",
             title: "Mean delta (signed log scale)",
+            colorbar_label: "mean delta",
             values: mean_delta,
             scale: scales.mean_delta_log,
             palette: colorous::RED_BLUE,
@@ -203,6 +216,7 @@ fn heatmap_metrics<'a>(
         HeatmapMetric {
             name: "ks_statistic_linear",
             title: "KS statistic (linear scale)",
+            colorbar_label: "KS",
             values: ks_statistic,
             scale: scales.ks_statistic_linear,
             palette: colorous::VIRIDIS,
@@ -211,6 +225,7 @@ fn heatmap_metrics<'a>(
         HeatmapMetric {
             name: "ks_statistic_log",
             title: "KS statistic (log scale)",
+            colorbar_label: "KS",
             values: ks_statistic,
             scale: scales.ks_statistic_log,
             palette: colorous::VIRIDIS,
@@ -219,6 +234,7 @@ fn heatmap_metrics<'a>(
         HeatmapMetric {
             name: "ks_pvalue_asymptotic_linear",
             title: "Asymptotic KS p-value (linear scale)",
+            colorbar_label: "p-value",
             values: ks_pvalue_asymptotic,
             scale: scales.ks_pvalue_asymptotic_linear,
             palette: colorous::VIRIDIS,
@@ -227,6 +243,7 @@ fn heatmap_metrics<'a>(
         HeatmapMetric {
             name: "ks_pvalue_asymptotic_log",
             title: "Asymptotic KS p-value (log scale)",
+            colorbar_label: "p-value",
             values: ks_pvalue_asymptotic,
             scale: scales.ks_pvalue_asymptotic_log,
             palette: colorous::VIRIDIS,
@@ -235,6 +252,7 @@ fn heatmap_metrics<'a>(
         HeatmapMetric {
             name: "wasserstein_1d_linear",
             title: "1D Wasserstein (linear scale)",
+            colorbar_label: "Wasserstein",
             values: wasserstein_1d,
             scale: scales.wasserstein_1d_linear,
             palette: colorous::VIRIDIS,
@@ -243,6 +261,7 @@ fn heatmap_metrics<'a>(
         HeatmapMetric {
             name: "wasserstein_1d_log",
             title: "1D Wasserstein (log scale)",
+            colorbar_label: "Wasserstein",
             values: wasserstein_1d,
             scale: scales.wasserstein_1d_log,
             palette: colorous::VIRIDIS,
@@ -360,8 +379,23 @@ where
     Backend: DrawingBackend,
     Backend::ErrorType: std::fmt::Debug,
 {
+    // Right-aligned colorbar label drawn manually above the chart.
+    // `.caption()` would render centered; manual draw_text gives us the
+    // anchoring we want.
+    let (area_width, _) = area.dim_in_pixel();
+    let label_x = i32::try_from(area_width)?.saturating_sub(COLORBAR_LABEL_RIGHT_PAD);
+    let label_style = ("sans-serif", 16)
+        .into_font()
+        .color(&BLACK)
+        .pos(Pos::new(HPos::Right, VPos::Center));
+    area.draw_text(
+        metric.colorbar_label,
+        &label_style,
+        (label_x, COLORBAR_LABEL_TOP),
+    )
+    .map_err(plotters_error)?;
+
     let mut chart = ChartBuilder::on(area)
-        .caption(metric.name, ("sans-serif", 16))
         .margin_left(4)
         .margin_right(12)
         .margin_top(90)
@@ -427,6 +461,9 @@ struct HeatmapMetric<'a> {
     name: &'static str,
     /// Human-readable title for the metric.
     title: &'static str,
+    /// Short label shown above the colorbar. Avoids the underscore-laden
+    /// `metric.name` and uses common scientific shorthand.
+    colorbar_label: &'static str,
     /// Matrix values for one similarity config.
     values: ArrayView2<'a, f64>,
     /// Value scale used to normalize colors.
