@@ -705,13 +705,18 @@ fn finite_positive_min(values: &ArrayView3<'_, f64>) -> Option<f64> {
 }
 
 /// Format a colorbar tick value.
+///
+/// Only an exact `0.0` collapses to the literal `"0"`. Genuinely tiny values
+/// (e.g. log-scale p-value ticks like `1e-100`) are not rounded to zero —
+/// they flow into scientific notation so the colorbar stays readable across
+/// many orders of magnitude.
 fn format_tick(value: f64) -> String {
-    if value.abs() < f64::EPSILON {
+    if value == 0.0 {
         "0".to_string()
-    } else if value != 0.0 && !(0.001..1_000.0).contains(&value.abs()) {
-        format!("{value:.2e}")
-    } else {
+    } else if (0.001..1_000.0).contains(&value.abs()) {
         format!("{value:.3}")
+    } else {
+        format!("{value:.2e}")
     }
 }
 
