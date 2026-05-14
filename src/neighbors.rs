@@ -501,6 +501,7 @@ mod tests {
             gems_parts: None,
             seed: 13,
             no_merge_close_peaks: false,
+            threshold_alphas: vec![0.01, 0.10],
         };
         let records = vec![
             synthetic_record("a", 500.0, &[(100.0, 10.0), (200.0, 20.0)])?,

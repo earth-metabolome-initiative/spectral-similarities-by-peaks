@@ -51,7 +51,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::FinalizeScan(args) => run_finalize_scan(args),
         Commands::FinalizeShard(args) => run_finalize_shard(args),
         Commands::FinalizeMerge(args) => run_finalize_merge(args),
-        Commands::RenderHeatmaps(args) => run_render_heatmaps(&args),
+        Commands::RenderHeatmaps(args) => run_render_heatmaps(args),
         Commands::RenderPathwayArtifacts(args) => run_render_pathway_artifacts(&args),
     }
 }
@@ -72,11 +72,18 @@ fn run_prefetch(args: &PrefetchArgs) -> Result<()> {
 }
 
 /// Re-render heatmap artifacts from an existing scan output directory.
-fn run_render_heatmaps(args: &RenderHeatmapArgs) -> Result<()> {
+fn run_render_heatmaps(mut args: RenderHeatmapArgs) -> Result<()> {
+    args.validate()?;
     let progress = ScanProgress::new();
     let arrays = read_grid_npz(&args.output_dir)?;
     let configs = read_grid_configs(&args.output_dir)?;
-    write_heatmaps(&args.output_dir, &configs, &arrays, &progress)
+    write_heatmaps(
+        &args.output_dir,
+        &configs,
+        &arrays,
+        &args.threshold_alphas,
+        &progress,
+    )
 }
 
 /// Rebuild pathway prediction artifacts from an existing scan output directory.
@@ -187,7 +194,7 @@ fn run_scan(mut args: ScanArgs) -> Result<()> {
     }
     scan_progress.finish();
 
-    writers.finish(&progress)?;
+    writers.finish(&args.threshold_alphas, &progress)?;
     if args.pathway_representatives_per_class > 0 {
         write_pathway_prediction_artifacts(&args.output_dir, &progress)?;
     }
@@ -332,7 +339,7 @@ fn run_finalize_scan(mut args: FinalizeScanArgs) -> Result<()> {
     }
     scan_progress.finish();
 
-    writers.finish(&progress)?;
+    writers.finish(&args.scan.threshold_alphas, &progress)?;
     if args.scan.pathway_representatives_per_class > 0 {
         write_pathway_prediction_artifacts(&args.scan.output_dir, &progress)?;
     }
@@ -391,6 +398,7 @@ fn run_finalize_shard(mut args: FinalizeShardArgs) -> Result<()> {
         output::FinishMode::PerConfigShard {
             canonical_dir: &canonical_dir,
         },
+        &args.scan.threshold_alphas,
         &progress,
     )
 }

@@ -128,6 +128,14 @@ pub struct ScanArgs {
     /// Keep close peaks instead of merging them before indexing.
     #[arg(long, default_value_t = false)]
     pub no_merge_close_peaks: bool,
+    /// Significance levels (one curve per α) for the heatmap p-value contour
+    /// overlay. Pass `--threshold-alpha` multiple times or comma-separated.
+    #[arg(
+        long = "threshold-alpha",
+        value_delimiter = ',',
+        default_values_t = [0.01_f64],
+    )]
+    pub threshold_alphas: Vec<f64>,
 }
 
 #[derive(Debug, Parser)]
@@ -180,6 +188,14 @@ pub struct RenderHeatmapArgs {
     /// Existing scan output directory with dense grid artifacts.
     #[arg(long, default_value = "results")]
     pub output_dir: PathBuf,
+    /// Significance levels (one curve per α) for the heatmap p-value contour
+    /// overlay. Pass `--threshold-alpha` multiple times or comma-separated.
+    #[arg(
+        long = "threshold-alpha",
+        value_delimiter = ',',
+        default_values_t = [0.01_f64],
+    )]
+    pub threshold_alphas: Vec<f64>,
 }
 
 #[derive(Debug, Parser)]
@@ -188,6 +204,29 @@ pub struct RenderPathwayArtifactArgs {
     /// Existing scan output directory with `pathway_predictions.parquet`.
     #[arg(long, default_value = "results")]
     pub output_dir: PathBuf,
+}
+
+impl RenderHeatmapArgs {
+    /// Validate and normalize threshold-alpha values.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the threshold-alpha list is empty or contains a
+    /// value outside `(0, 1)`.
+    pub fn validate(&mut self) -> Result<()> {
+        if self.threshold_alphas.is_empty() {
+            bail!("at least one --threshold-alpha must be provided");
+        }
+        for alpha in &self.threshold_alphas {
+            if !alpha.is_finite() || *alpha <= 0.0 || *alpha >= 1.0 {
+                bail!("--threshold-alpha values must lie strictly between 0 and 1");
+            }
+        }
+        self.threshold_alphas
+            .sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        self.threshold_alphas.dedup();
+        Ok(())
+    }
 }
 
 impl ScanArgs {
@@ -214,6 +253,17 @@ impl ScanArgs {
                 bail!("--pepmass-tolerance must be finite and non-negative");
             }
         }
+        if self.threshold_alphas.is_empty() {
+            bail!("at least one --threshold-alpha must be provided");
+        }
+        for alpha in &self.threshold_alphas {
+            if !alpha.is_finite() || *alpha <= 0.0 || *alpha >= 1.0 {
+                bail!("--threshold-alpha values must lie strictly between 0 and 1");
+            }
+        }
+        self.threshold_alphas
+            .sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        self.threshold_alphas.dedup();
         Ok(())
     }
 }

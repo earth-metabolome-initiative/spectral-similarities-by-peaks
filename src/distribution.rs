@@ -19,6 +19,10 @@ use crate::{
 };
 
 /// Summarize one sorted empirical similarity-score distribution.
+///
+/// # Errors
+///
+/// Returns an error when `sorted` is empty.
 pub fn summarize_sorted_distribution(
     args: &ScanArgs,
     config: &SimilarityConfig,
@@ -92,6 +96,10 @@ pub fn self_comparison(
 }
 
 /// Compare two adjacent empirical similarity-score distributions.
+///
+/// # Errors
+///
+/// Returns an error when either distribution's score vector is empty.
 pub fn compare_distributions(
     args: &ScanArgs,
     config: &SimilarityConfig,
@@ -126,6 +134,10 @@ pub fn compare_distributions(
 }
 
 /// Build fixed-width histogram bins over the `[0, 1]` similarity range from sorted scores.
+///
+/// # Errors
+///
+/// Returns an error when `sorted` is empty.
 pub fn histogram_sorted_distribution(
     args: &ScanArgs,
     config: &SimilarityConfig,

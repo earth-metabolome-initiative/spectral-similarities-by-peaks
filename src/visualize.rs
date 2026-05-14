@@ -15,15 +15,15 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use colorous::Gradient;
-use ndarray::{ArrayView2, ArrayView3, Axis};
+use ndarray::{Array2, ArrayView2, ArrayView3, Axis};
 use plotters::{
     coord::Shift,
     prelude::{
-        BLACK, BitMapBackend, ChartBuilder, DrawingArea, DrawingBackend, IntoDrawingArea, RGBColor,
-        Rectangle, SVGBackend, WHITE,
+        BLACK, BitMapBackend, ChartBuilder, DrawingArea, DrawingBackend, IntoDrawingArea,
+        PathElement, RGBColor, Rectangle, SVGBackend, SeriesLabelPosition, WHITE,
     },
     style::{
-        Color, FontStyle, IntoFont, register_font,
+        Color, FontStyle, IntoFont, ShapeStyle, register_font,
         text_anchor::{HPos, Pos, VPos},
     },
 };
@@ -33,12 +33,24 @@ use crate::{
     progress::{ProgressTask, ScanProgress},
 };
 
+/// Linear scale factor applied to every pixel dimension (canvas size,
+/// margins, font sizes, stroke widths). Doubling this constant doubles the
+/// rendered PNG resolution while preserving the visual layout; the SVG
+/// output is also drawn larger but is unaffected visually since it stays
+/// vector-based.
+const RENDER_SCALE: u32 = 2;
+
+/// Signed counterpart of `RENDER_SCALE` for the few places that take `i32`
+/// (label coordinates, legend bar length).
+#[allow(clippy::cast_possible_wrap)]
+const RENDER_SCALE_I32: i32 = RENDER_SCALE as i32;
+
 /// Width of each rendered heatmap image in pixels.
-const IMAGE_WIDTH: u32 = 1_000;
+const IMAGE_WIDTH: u32 = 1_000 * RENDER_SCALE;
 /// Height of each rendered heatmap image in pixels.
-const IMAGE_HEIGHT: u32 = 900;
+const IMAGE_HEIGHT: u32 = 900 * RENDER_SCALE;
 /// Width reserved for the chart area before the colorbar.
-const CHART_AREA_WIDTH: u32 = 860;
+const CHART_AREA_WIDTH: u32 = 860 * RENDER_SCALE;
 /// Number of colored rectangles used to draw the colorbar.
 const COLORBAR_STEPS: usize = 256;
 /// Fallback color for non-finite matrix entries.
@@ -53,11 +65,11 @@ const HEATMAP_METRIC_COUNT: usize = 8;
 
 /// Horizontal padding between the right edge of the colorbar panel and the
 /// right-anchored colorbar label.
-const COLORBAR_LABEL_RIGHT_PAD: i32 = 16;
+const COLORBAR_LABEL_RIGHT_PAD: i32 = 16 * RENDER_SCALE_I32;
 /// Vertical position (pixels from the top of the colorbar panel) for the
 /// colorbar label's vertical center. Sits just above the colorbar top edge,
 /// which is at `margin_top = 90` pixels of the same panel.
-const COLORBAR_LABEL_TOP: i32 = 70;
+const COLORBAR_LABEL_TOP: i32 = 70 * RENDER_SCALE_I32;
 
 /// Environment variable that may point to a TrueType or OpenType font file.
 const HEATMAP_FONT_ENV_VAR: &str = "SPECTRAL_SIMILARITIES_FONT";
@@ -75,10 +87,15 @@ const HEATMAP_FONT_CANDIDATES: &[&str] = &[
 static HEATMAP_FONT_REGISTRATION: OnceLock<std::result::Result<(), String>> = OnceLock::new();
 
 /// Write SVG and PNG heatmaps for each dense grid matrix and config.
+///
+/// `threshold_alphas` lists the significance levels (one curve per α) overlaid
+/// on every heatmap; the same set of curves is reused across all eight metric
+/// variants of one config.
 pub fn write_heatmaps(
     output_dir: &Path,
     configs: &[String],
     arrays: &GridArrays,
+    threshold_alphas: &[f64],
     progress: &ScanProgress,
 ) -> Result<()> {
     validate_config_axis(configs, arrays)?;
@@ -101,9 +118,61 @@ pub fn write_heatmaps(
         let config_dir = output_dir.join(sanitize_path_component(config));
         fs::create_dir_all(&config_dir)
             .with_context(|| format!("creating {}", config_dir.display()))?;
+        let pvalue_slice = arrays
+            .ks_pvalue_asymptotic
+            .index_axis(Axis(0), config_index);
+        // Mask every self-comparison cell (row == col) to NaN before tracing
+        // any contour. The diagonal carries canonical singularities (p = 1
+        // for the p-value, D = 0 for KS statistic, Δμ = 0 for mean delta)
+        // that produce ring/zigzag/saddle artifacts in marching squares no
+        // matter how we override them. `extract_contour` skips any quad
+        // with a non-finite corner, so masking the diagonal cleanly removes
+        // them from contour extraction across all three metrics.
+        let mut pvalue_grid: Array2<f64> = pvalue_slice.to_owned();
+        mask_main_diagonal(&mut pvalue_grid);
+        let mut curves: Vec<ContourCurve> = threshold_alphas
+            .iter()
+            .enumerate()
+            .map(|(index, &alpha)| {
+                let segments = extract_contour(&pvalue_grid.view(), alpha);
+                let (x_axis_ticks, y_axis_ticks) = curve_edge_ticks(&segments);
+                ContourCurve {
+                    label: format_contour_label(alpha),
+                    segments,
+                    color: CONTOUR_COLORS[index % CONTOUR_COLORS.len()],
+                    x_axis_ticks,
+                    y_axis_ticks,
+                }
+            })
+            .collect();
+        // KS statistic "practical effect-size" thresholds. The p-value
+        // contours saturate quickly with sample size — at ~10⁵ scores per
+        // cell here, even a 0.5 % CDF gap is 6σ significant — so these
+        // curves answer the complementary question of where the empirical
+        // CDFs actually diverge by a non-negligible amount, independent of
+        // sample size. Mask the diagonal as we do for the p-value grid.
+        let mut ks_statistic_grid: Array2<f64> = arrays
+            .ks_statistic
+            .index_axis(Axis(0), config_index)
+            .to_owned();
+        mask_main_diagonal(&mut ks_statistic_grid);
+        for &threshold in KS_STATISTIC_THRESHOLDS {
+            let segments = extract_contour(&ks_statistic_grid.view(), threshold);
+            if !segments.is_empty() {
+                let (x_axis_ticks, y_axis_ticks) = curve_edge_ticks(&segments);
+                curves.push(ContourCurve {
+                    label: format!("D = {threshold}"),
+                    segments,
+                    color: CONTOUR_COLORS[curves.len() % CONTOUR_COLORS.len()],
+                    x_axis_ticks,
+                    y_axis_ticks,
+                });
+            }
+        }
+        let overlay = ContourOverlay { curves: &curves };
         for metric in heatmap_metrics(arrays, &scales, config_index) {
             task.set_message(format!("rendering {config} {}", metric.name));
-            write_heatmap_pair(&config_dir, config, &metric, &task)?;
+            write_heatmap_pair(&config_dir, config, &metric, &overlay, &task)?;
         }
     }
     task.finish();
@@ -270,32 +339,68 @@ fn heatmap_metrics<'a>(
     ]
 }
 
+/// One contour curve rendered on top of every heatmap.
+struct ContourCurve {
+    /// Pre-formatted legend label for this curve.
+    label: String,
+    /// Unordered marching-squares segments in chart coordinates.
+    segments: Vec<ContourSegment>,
+    /// Stroke color used for this curve. The axis-tick labels are drawn in
+    /// the same color.
+    color: RGBColor,
+    /// X-axis tick positions: the curve's x-coordinate at its topmost
+    /// endpoint, shifted by +1 for the chart's cell-offset convention.
+    /// Shown only on the x-axis (matching the value's axis).
+    x_axis_ticks: Vec<i32>,
+    /// Y-axis tick positions: the curve's y-coordinate at its rightmost
+    /// endpoint. Shown only on the y-axis.
+    y_axis_ticks: Vec<i32>,
+}
+
+/// Per-config contour set shared across all 8 metric heatmaps.
+#[derive(Clone, Copy)]
+struct ContourOverlay<'a> {
+    /// One curve per requested significance level / effect-size threshold.
+    curves: &'a [ContourCurve],
+}
+
 /// Write both SVG and PNG files for one heatmap metric.
 fn write_heatmap_pair(
     output_dir: &Path,
     config: &str,
     metric: &HeatmapMetric<'_>,
+    overlay: &ContourOverlay<'_>,
     progress: &ProgressTask,
 ) -> Result<()> {
     let stem = output_dir.join(metric.name);
-    write_svg(&stem.with_extension("svg"), config, metric)?;
+    write_svg(&stem.with_extension("svg"), config, metric, overlay)?;
     progress.inc(1);
-    write_png(&stem.with_extension("png"), config, metric)?;
+    write_png(&stem.with_extension("png"), config, metric, overlay)?;
     progress.inc(1);
     Ok(())
 }
 
 /// Write one SVG heatmap.
-fn write_svg(path: &Path, config: &str, metric: &HeatmapMetric<'_>) -> Result<()> {
+fn write_svg(
+    path: &Path,
+    config: &str,
+    metric: &HeatmapMetric<'_>,
+    overlay: &ContourOverlay<'_>,
+) -> Result<()> {
     let root = SVGBackend::new(path, (IMAGE_WIDTH, IMAGE_HEIGHT)).into_drawing_area();
-    draw_heatmap(&root, config, metric)
+    draw_heatmap(&root, config, metric, overlay)
         .with_context(|| format!("writing SVG heatmap {}", path.display()))
 }
 
 /// Write one PNG heatmap.
-fn write_png(path: &Path, config: &str, metric: &HeatmapMetric<'_>) -> Result<()> {
+fn write_png(
+    path: &Path,
+    config: &str,
+    metric: &HeatmapMetric<'_>,
+    overlay: &ContourOverlay<'_>,
+) -> Result<()> {
     let root = BitMapBackend::new(path, (IMAGE_WIDTH, IMAGE_HEIGHT)).into_drawing_area();
-    draw_heatmap(&root, config, metric)
+    draw_heatmap(&root, config, metric, overlay)
         .with_context(|| format!("writing PNG heatmap {}", path.display()))
 }
 
@@ -304,6 +409,7 @@ fn draw_heatmap<Backend>(
     root: &DrawingArea<Backend, Shift>,
     config: &str,
     metric: &HeatmapMetric<'_>,
+    overlay: &ContourOverlay<'_>,
 ) -> Result<()>
 where
     Backend: DrawingBackend,
@@ -311,16 +417,18 @@ where
 {
     root.fill(&WHITE).map_err(plotters_error)?;
     let (chart_area, colorbar_area) = root.split_horizontally(CHART_AREA_WIDTH);
-    draw_matrix(&chart_area, config, metric)?;
+    draw_matrix(&chart_area, config, metric, overlay)?;
     draw_colorbar(&colorbar_area, metric)?;
     root.present().map_err(plotters_error)
 }
 
 /// Draw the main matrix panel.
+#[allow(clippy::too_many_lines, clippy::similar_names)]
 fn draw_matrix<Backend>(
     area: &DrawingArea<Backend, Shift>,
     config: &str,
     metric: &HeatmapMetric<'_>,
+    overlay: &ContourOverlay<'_>,
 ) -> Result<()>
 where
     Backend: DrawingBackend,
@@ -328,49 +436,191 @@ where
 {
     let rows = metric.values.nrows();
     let columns = metric.values.ncols();
-    let x_end = usize_to_i32(columns + 1)?;
-    let y_end = usize_to_i32(rows + 1)?;
+    let x_end = (columns + 1) as f64;
+    let y_end = (rows + 1) as f64;
     let mut chart = ChartBuilder::on(area)
         .caption(
             format!("{} — {}", pretty_config_title(config), metric.title),
-            ("sans-serif", 24),
+            ("sans-serif", 24 * RENDER_SCALE),
         )
-        .margin(22)
-        .x_label_area_size(48)
-        .y_label_area_size(58)
-        .build_cartesian_2d(0_i32..x_end, 0_i32..y_end)
+        .margin(22 * RENDER_SCALE)
+        .x_label_area_size(48 * RENDER_SCALE)
+        .y_label_area_size(58 * RENDER_SCALE)
+        .build_cartesian_2d(0.0_f64..x_end, 0.0_f64..y_end)
         .map_err(plotters_error)?;
 
+    // The plotters default mesh renders only the canonical axis ticks in
+    // black. Per-curve crossing ticks are drawn manually below in the
+    // matching curve color.
+    let tick_label = |value: &f64| {
+        let rounded = value.round();
+        if (value - rounded).abs() < 1.0e-6 {
+            let as_int = rounded as i32;
+            if HEATMAP_AXIS_TICKS.contains(&as_int) {
+                return as_int.to_string();
+            }
+        }
+        String::new()
+    };
+    let x_end_usize = usize::try_from(x_end as i64).unwrap_or(usize::MAX);
+    let y_end_usize = usize::try_from(y_end as i64).unwrap_or(usize::MAX);
     chart
         .configure_mesh()
         .disable_mesh()
         .x_desc("Top peaks retained")
         .y_desc("Top peaks retained")
-        .x_labels(usize::try_from(x_end).unwrap_or(usize::MAX))
-        .y_labels(usize::try_from(y_end).unwrap_or(usize::MAX))
-        .x_label_formatter(&|value| {
-            if HEATMAP_AXIS_TICKS.contains(value) {
-                value.to_string()
-            } else {
-                String::new()
-            }
-        })
-        .y_label_formatter(&|value| {
-            if HEATMAP_AXIS_TICKS.contains(value) {
-                value.to_string()
-            } else {
-                String::new()
-            }
-        })
-        .axis_desc_style(("sans-serif", 20))
-        .label_style(("sans-serif", 16))
+        .x_labels(x_end_usize)
+        .y_labels(y_end_usize)
+        .x_label_formatter(&tick_label)
+        .y_label_formatter(&tick_label)
+        .axis_desc_style(("sans-serif", 20 * RENDER_SCALE))
+        .label_style(("sans-serif", 16 * RENDER_SCALE))
         .draw()
         .map_err(plotters_error)?;
 
     chart
-        .draw_series(matrix_cells(metric)?)
+        .draw_series(matrix_cells(metric))
         .map_err(plotters_error)?;
+
+    // Marching-squares output places samples at cell centers (c+0.5, r+0.5)
+    // but `matrix_cells` draws sample (r, c) at chart rect [c+1, c+2] × [r+1, r+2].
+    // Shift each contour endpoint by +1 in both axes to land on the visual
+    // cell centers (c + 1.5, r + 1.5) before drawing.
+    //
+    // Iteration order: lenient (largest α, outermost contour) first so the
+    // stricter curves overlay on top of it.
+    let mut has_legend_entry = false;
+    for curve in overlay.curves.iter().rev() {
+        if curve.segments.is_empty() {
+            continue;
+        }
+        let style = ShapeStyle {
+            color: curve.color.to_rgba(),
+            filled: false,
+            stroke_width: 2 * RENDER_SCALE,
+        };
+        let mut series_iter = curve
+            .segments
+            .iter()
+            .map(|&((x1, y1), (x2, y2))| vec![(x1 + 1.0, y1 + 1.0), (x2 + 1.0, y2 + 1.0)]);
+        let Some(first) = series_iter.next() else {
+            continue;
+        };
+        let label = curve.label.clone();
+        chart
+            .draw_series(std::iter::once(PathElement::new(first, style)))
+            .map_err(plotters_error)?
+            .label(label)
+            .legend(move |(x, y)| {
+                PathElement::new(vec![(x, y), (x + 24 * RENDER_SCALE_I32, y)], style)
+            });
+        for points in series_iter {
+            chart
+                .draw_series(std::iter::once(PathElement::new(points, style)))
+                .map_err(plotters_error)?;
+        }
+        has_legend_entry = true;
+    }
+    if has_legend_entry {
+        chart
+            .configure_series_labels()
+            .position(SeriesLabelPosition::UpperLeft)
+            .background_style(WHITE.mix(0.82))
+            .border_style(BLACK)
+            .legend_area_size(30 * RENDER_SCALE)
+            .label_font(("sans-serif", 14 * RENDER_SCALE).into_font())
+            .draw()
+            .map_err(plotters_error)?;
+    }
+
+    // Per-curve axis tick labels. Each curve contributes:
+    //   - one x-axis label at its topmost endpoint's x position (where the
+    //     curve reaches the top edge of the plot)
+    //   - one y-axis label at its rightmost endpoint's y position (where
+    //     the curve reaches the right edge of the plot)
+    // Both labels are drawn in the curve's color so the connection is
+    // immediate. Default ticks (0, 32, 64, 96, 128) remain black.
+    let plot_pixels = chart.plotting_area().get_pixel_range();
+    let (plot_x_min, plot_y_max) = (plot_pixels.0.start, plot_pixels.1.end);
+    let x_label_y = plot_y_max + 6 * RENDER_SCALE_I32;
+    let y_label_x = plot_x_min - 6 * RENDER_SCALE_I32;
+    for curve in overlay.curves {
+        let style_x = ("sans-serif", 16 * RENDER_SCALE)
+            .into_font()
+            .color(&curve.color)
+            .pos(Pos::new(HPos::Center, VPos::Top));
+        let style_y = ("sans-serif", 16 * RENDER_SCALE)
+            .into_font()
+            .color(&curve.color)
+            .pos(Pos::new(HPos::Right, VPos::Center));
+        for &tick in &curve.x_axis_ticks {
+            if HEATMAP_AXIS_TICKS.iter().any(|d| (tick - d).abs() < 1) {
+                continue;
+            }
+            let (tick_px, _) = chart.backend_coord(&(f64::from(tick), 0.0));
+            area.draw_text(&tick.to_string(), &style_x, (tick_px, x_label_y))
+                .map_err(plotters_error)?;
+        }
+        for &tick in &curve.y_axis_ticks {
+            if HEATMAP_AXIS_TICKS.iter().any(|d| (tick - d).abs() < 1) {
+                continue;
+            }
+            let (_, tick_py) = chart.backend_coord(&(0.0, f64::from(tick)));
+            area.draw_text(&tick.to_string(), &style_y, (y_label_x, tick_py))
+                .map_err(plotters_error)?;
+        }
+    }
     Ok(())
+}
+
+/// Minimum perpendicular distance (in cell units) between the curve's
+/// extreme endpoint and the main diagonal for the curve to be considered
+/// "converged" enough to display its asymptote tick. Curves that hug the
+/// diagonal (e.g., the p-value α-contour at large samples) never separate
+/// from the diagonal, so their rightmost / topmost endpoints just reflect
+/// where the data array ends — labeling those would be misleading.
+const ASYMPTOTE_MIN_DIAGONAL_OFFSET: f64 = 15.0;
+
+/// Compute the per-axis tick positions for one curve. Returns
+/// `(x_axis_ticks, y_axis_ticks)` where:
+/// - `x_axis_ticks` is the curve's x-coordinate at its topmost endpoint
+///   (where it hits the top edge of the plot), shown only on the x-axis;
+/// - `y_axis_ticks` is the curve's y-coordinate at its rightmost endpoint,
+///   shown only on the y-axis.
+///
+/// Returns empty vectors for curves that never separate sufficiently from
+/// the diagonal (no horizontal/vertical asymptote to label). All positions
+/// are shifted by `+1` to match the chart's cell-offset convention (sample
+/// `(r, c)` is drawn at chart rect `[c+1, c+2] × [r+1, r+2]`).
+fn curve_edge_ticks(segments: &[ContourSegment]) -> (Vec<i32>, Vec<i32>) {
+    if segments.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let mut max_x = f64::NEG_INFINITY;
+    let mut y_at_max_x = 0.0_f64;
+    let mut max_y = f64::NEG_INFINITY;
+    let mut x_at_max_y = 0.0_f64;
+    for &((x1, y1), (x2, y2)) in segments {
+        for (x, y) in [(x1, y1), (x2, y2)] {
+            if x > max_x {
+                max_x = x;
+                y_at_max_x = y;
+            }
+            if y > max_y {
+                max_y = y;
+                x_at_max_y = x;
+            }
+        }
+    }
+    let mut x_axis_ticks = Vec::new();
+    let mut y_axis_ticks = Vec::new();
+    if max_x - y_at_max_x > ASYMPTOTE_MIN_DIAGONAL_OFFSET {
+        y_axis_ticks.push((y_at_max_x.round() as i32) + 1);
+    }
+    if max_y - x_at_max_y > ASYMPTOTE_MIN_DIAGONAL_OFFSET {
+        x_axis_ticks.push((x_at_max_y.round() as i32) + 1);
+    }
+    (x_axis_ticks, y_axis_ticks)
 }
 
 /// Draw the metric colorbar panel.
@@ -387,7 +637,7 @@ where
     // anchoring we want.
     let (area_width, _) = area.dim_in_pixel();
     let label_x = i32::try_from(area_width)?.saturating_sub(COLORBAR_LABEL_RIGHT_PAD);
-    let label_style = ("sans-serif", 16)
+    let label_style = ("sans-serif", 16 * RENDER_SCALE)
         .into_font()
         .color(&BLACK)
         .pos(Pos::new(HPos::Right, VPos::Center));
@@ -399,11 +649,11 @@ where
     .map_err(plotters_error)?;
 
     let mut chart = ChartBuilder::on(area)
-        .margin_left(4)
-        .margin_right(12)
-        .margin_top(90)
-        .margin_bottom(86)
-        .y_label_area_size(80)
+        .margin_left(4 * RENDER_SCALE)
+        .margin_right(12 * RENDER_SCALE)
+        .margin_top(90 * RENDER_SCALE)
+        .margin_bottom(86 * RENDER_SCALE)
+        .y_label_area_size(80 * RENDER_SCALE)
         .build_cartesian_2d(0.0_f64..1.0_f64, 0.0_f64..1.0_f64)
         .map_err(plotters_error)?;
     chart
@@ -412,7 +662,7 @@ where
         .disable_y_mesh()
         .x_labels(0)
         .y_labels(7)
-        .label_style(("sans-serif", 15))
+        .label_style(("sans-serif", 15 * RENDER_SCALE))
         .y_label_formatter(&|position| format_tick(metric.scale.value_at(*position)))
         .draw()
         .map_err(plotters_error)?;
@@ -423,24 +673,24 @@ where
 }
 
 /// Return all colored matrix cells for a heatmap.
-fn matrix_cells(metric: &HeatmapMetric<'_>) -> Result<Vec<Rectangle<(i32, i32)>>> {
+fn matrix_cells(metric: &HeatmapMetric<'_>) -> Vec<Rectangle<(f64, f64)>> {
     let mut cells = Vec::with_capacity(metric.values.len());
     for row in 0..metric.values.nrows() {
         for column in 0..metric.values.ncols() {
-            let x0 = usize_to_i32(column + 1)?;
-            let y0 = usize_to_i32(row + 1)?;
+            let x0 = (column + 1) as f64;
+            let y0 = (row + 1) as f64;
             let value = if row == column {
                 metric.diagonal_value
             } else {
                 metric.values[[row, column]]
             };
             cells.push(Rectangle::new(
-                [(x0, y0), (x0 + 1, y0 + 1)],
+                [(x0, y0), (x0 + 1.0, y0 + 1.0)],
                 metric.color(value).filled(),
             ));
         }
     }
-    Ok(cells)
+    cells
 }
 
 /// Return colored cells for the vertical colorbar.
@@ -760,10 +1010,33 @@ fn format_tick(value: f64) -> String {
     }
 }
 
-/// Convert a `usize` to `i32` for plotting coordinates.
-fn usize_to_i32(value: usize) -> Result<i32> {
-    i32::try_from(value).context("plot coordinate does not fit i32")
+/// Format a significance-level label for the heatmap legend. Uses scientific
+/// notation for very small alphas.
+fn format_contour_label(alpha: f64) -> String {
+    if alpha < 0.001 {
+        format!("α = {alpha:.2e}")
+    } else {
+        format!("α = {alpha}")
+    }
 }
+
+/// Bright pastel stroke colors cycled through, one per significance-threshold
+/// contour. Chosen to read well against both viridis and red-blue palettes.
+const CONTOUR_COLORS: &[RGBColor] = &[
+    RGBColor(255, 99, 132),  // pastel red
+    RGBColor(102, 187, 255), // pastel sky blue
+    RGBColor(120, 220, 140), // pastel green
+    RGBColor(255, 180, 90),  // pastel orange
+    RGBColor(190, 130, 240), // pastel violet
+];
+
+/// Sample-size-independent "practical" thresholds for the KS statistic
+/// (max-CDF-gap) contour overlay, drawn in this order so the lenient curve
+/// sits underneath and the strict one on top. `0.10` is the data-drift
+/// literature's small/moderate boundary, `0.05` is the negligible/small
+/// boundary, and `0.01` is a tighter "practically detectable" boundary
+/// that hugs the diagonal where the CDFs are nearly identical.
+const KS_STATISTIC_THRESHOLDS: &[f64] = &[0.10, 0.05, 0.01];
 
 /// Peak-count axis tick positions kept on every distribution heatmap.
 const HEATMAP_AXIS_TICKS: &[i32] = &[0, 32, 64, 96, 128];
@@ -915,4 +1188,286 @@ pub fn sanitize_path_component(raw: &str) -> PathBuf {
 /// Convert a plotters backend error into an anyhow error.
 pub fn plotters_error<Error: std::fmt::Debug>(error: Error) -> anyhow::Error {
     anyhow!("{error:?}")
+}
+
+/// One line segment of a contour polyline, expressed in chart coordinates
+/// (column-axis x, row-axis y) where the sample at `grid[(r, c)]` lives at
+/// `(c + 0.5, r + 0.5)`.
+type ContourSegment = ((f64, f64), (f64, f64));
+
+/// Set every self-comparison cell (`row == col`) of `grid` to NaN, so
+/// `extract_contour` skips every 2×2 quad that touches the main diagonal.
+/// The diagonal carries metric-specific singularities (`p = 1`, `D = 0`,
+/// `Δμ = 0`) that otherwise produce ring/zigzag/saddle artifacts.
+fn mask_main_diagonal(grid: &mut Array2<f64>) {
+    let len = grid.nrows().min(grid.ncols());
+    for k in 0..len {
+        grid[(k, k)] = f64::NAN;
+    }
+}
+
+/// Trace the `alpha`-level contour of a 2D grid using marching squares with
+/// linear interpolation. Returns an unordered list of line segments; segments
+/// in ambiguous saddle cells are resolved against the cell centroid.
+///
+/// Non-finite cells short-circuit the surrounding quad (no segments emitted
+/// when any of the four corners is NaN/inf), preventing spurious contours
+/// through holes in the data.
+fn extract_contour(grid: &ArrayView2<f64>, alpha: f64) -> Vec<ContourSegment> {
+    let mut segments = Vec::new();
+    let (n_rows, n_cols) = grid.dim();
+    if n_rows < 2 || n_cols < 2 {
+        return segments;
+    }
+    for r in 0..n_rows - 1 {
+        for c in 0..n_cols - 1 {
+            let tl = grid[(r, c)];
+            let tr = grid[(r, c + 1)];
+            let br = grid[(r + 1, c + 1)];
+            let bl = grid[(r + 1, c)];
+            if !(tl.is_finite() && tr.is_finite() && br.is_finite() && bl.is_finite()) {
+                continue;
+            }
+            let xl = c as f64 + 0.5;
+            let xr = (c + 1) as f64 + 0.5;
+            let yt = r as f64 + 0.5;
+            let yb = (r + 1) as f64 + 0.5;
+
+            let mut case: u8 = 0;
+            if tl >= alpha {
+                case |= 1;
+            }
+            if tr >= alpha {
+                case |= 2;
+            }
+            if br >= alpha {
+                case |= 4;
+            }
+            if bl >= alpha {
+                case |= 8;
+            }
+
+            let interp = |a: f64, b: f64| {
+                let denom = b - a;
+                if denom == 0.0 {
+                    0.5
+                } else {
+                    ((alpha - a) / denom).clamp(0.0, 1.0)
+                }
+            };
+            let top = || (xl + interp(tl, tr) * (xr - xl), yt);
+            let right = || (xr, yt + interp(tr, br) * (yb - yt));
+            let bottom = || (xl + interp(bl, br) * (xr - xl), yb);
+            let left = || (xl, yt + interp(tl, bl) * (yb - yt));
+
+            match case {
+                0 | 15 => {}
+                1 | 14 => segments.push((left(), top())),
+                2 | 13 => segments.push((top(), right())),
+                3 | 12 => segments.push((left(), right())),
+                4 | 11 => segments.push((right(), bottom())),
+                6 | 9 => segments.push((top(), bottom())),
+                7 | 8 => segments.push((left(), bottom())),
+                5 => {
+                    let center = (tl + tr + br + bl) * 0.25;
+                    if center >= alpha {
+                        segments.push((top(), right()));
+                        segments.push((left(), bottom()));
+                    } else {
+                        segments.push((left(), top()));
+                        segments.push((right(), bottom()));
+                    }
+                }
+                10 => {
+                    let center = (tl + tr + br + bl) * 0.25;
+                    if center >= alpha {
+                        segments.push((left(), top()));
+                        segments.push((right(), bottom()));
+                    } else {
+                        segments.push((top(), right()));
+                        segments.push((left(), bottom()));
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+    segments
+}
+
+/// Derive the extra axis tick positions (rounded to the nearest integer)
+/// where the contour comes closest to the four plot edges. Returns at most
+/// four ticks (min-x, max-x, min-y, max-y), sorted and deduplicated.
+///
+/// Currently only used by the unit tests as the simpler reference for the
+/// per-curve tick derivation in `curve_edge_ticks`.
+#[allow(dead_code)]
+fn axis_crossings(segments: &[ContourSegment]) -> Vec<i32> {
+    if segments.is_empty() {
+        return Vec::new();
+    }
+    let mut min_x = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for &((x1, y1), (x2, y2)) in segments {
+        for x in [x1, x2] {
+            if x < min_x {
+                min_x = x;
+            }
+            if x > max_x {
+                max_x = x;
+            }
+        }
+        for y in [y1, y2] {
+            if y < min_y {
+                min_y = y;
+            }
+            if y > max_y {
+                max_y = y;
+            }
+        }
+    }
+    let mut ticks: Vec<i32> = [min_x, max_x, min_y, max_y]
+        .iter()
+        .map(|value| value.round() as i32)
+        .collect();
+    ticks.sort_unstable();
+    ticks.dedup();
+    ticks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ContourSegment, axis_crossings, extract_contour};
+    use ndarray::{Array2, array};
+
+    fn approx_eq(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1.0e-9
+    }
+
+    #[test]
+    fn extract_contour_returns_empty_when_all_corners_above() {
+        let grid = array![[1.0, 1.0], [1.0, 1.0]];
+        assert!(extract_contour(&grid.view(), 0.5).is_empty());
+    }
+
+    #[test]
+    fn extract_contour_returns_empty_when_all_corners_below() {
+        let grid = array![[0.0, 0.0], [0.0, 0.0]];
+        assert!(extract_contour(&grid.view(), 0.5).is_empty());
+    }
+
+    #[test]
+    fn extract_contour_horizontal_split_emits_one_horizontal_segment() {
+        let grid = array![[1.0, 1.0], [0.0, 0.0]];
+        let segments = extract_contour(&grid.view(), 0.5);
+        assert_eq!(segments.len(), 1);
+        let ((x1, y1), (x2, y2)) = segments[0];
+        let (xa, xb) = if x1 < x2 { (x1, x2) } else { (x2, x1) };
+        assert!(approx_eq(xa, 0.5));
+        assert!(approx_eq(xb, 1.5));
+        assert!(approx_eq(y1, 1.0));
+        assert!(approx_eq(y2, 1.0));
+    }
+
+    #[test]
+    fn extract_contour_isolated_corner_emits_one_corner_segment() {
+        let grid = array![[1.0, 0.0], [0.0, 0.0]];
+        let segments = extract_contour(&grid.view(), 0.5);
+        assert_eq!(segments.len(), 1);
+        let ((x1, y1), (x2, y2)) = segments[0];
+        let endpoints = [(x1, y1), (x2, y2)];
+        let on_left = endpoints
+            .iter()
+            .any(|(x, y)| approx_eq(*x, 0.5) && approx_eq(*y, 1.0));
+        let on_top = endpoints
+            .iter()
+            .any(|(x, y)| approx_eq(*x, 1.0) && approx_eq(*y, 0.5));
+        assert!(
+            on_left && on_top,
+            "expected (0.5, 1.0) and (1.0, 0.5), got {endpoints:?}"
+        );
+    }
+
+    #[test]
+    fn extract_contour_gaussian_bump_lies_on_expected_radius() {
+        // Bump centered at sample (10, 10), sigma^2 = 16.
+        // Contour at alpha=0.5 traces a circle of radius sigma*sqrt(ln 2).
+        let n = 21usize;
+        let mut grid = Array2::zeros((n, n));
+        let sigma_sq = 16.0;
+        for i in 0..n {
+            for j in 0..n {
+                let dy = (i as f64) - 10.0;
+                let dx = (j as f64) - 10.0;
+                grid[(i, j)] = ((-(dx * dx + dy * dy)) / sigma_sq).exp();
+            }
+        }
+        let segments = extract_contour(&grid.view(), 0.5);
+        assert!(!segments.is_empty(), "expected at least one segment");
+        let expected_radius = (sigma_sq * std::f64::consts::LN_2).sqrt();
+        let center = 10.5_f64;
+        for ((x1, y1), (x2, y2)) in segments.iter().copied() {
+            let r1 = (x1 - center).hypot(y1 - center);
+            let r2 = (x2 - center).hypot(y2 - center);
+            assert!(
+                (r1 - expected_radius).abs() < 0.5,
+                "endpoint ({x1}, {y1}) radius {r1} differs from {expected_radius}"
+            );
+            assert!(
+                (r2 - expected_radius).abs() < 0.5,
+                "endpoint ({x2}, {y2}) radius {r2} differs from {expected_radius}"
+            );
+        }
+    }
+
+    #[test]
+    fn extract_contour_is_symmetric_for_symmetric_input() {
+        // A small 5x5 grid that is symmetric under transpose; the contour
+        // should mirror through the diagonal.
+        let n = 5usize;
+        let mut grid = Array2::zeros((n, n));
+        for i in 0..n {
+            for j in 0..n {
+                let d = ((i as f64) - (j as f64)).abs();
+                grid[(i, j)] = (-d / 2.0).exp();
+            }
+        }
+        let segments = extract_contour(&grid.view(), 0.5);
+        let mut transposed = std::collections::HashSet::new();
+        for ((x1, y1), (x2, y2)) in segments.iter().copied() {
+            transposed.insert((
+                ((y1 * 1.0e6).round() as i64, (x1 * 1.0e6).round() as i64),
+                ((y2 * 1.0e6).round() as i64, (x2 * 1.0e6).round() as i64),
+            ));
+        }
+        for ((x1, y1), (x2, y2)) in segments {
+            let key = (
+                ((x1 * 1.0e6).round() as i64, (y1 * 1.0e6).round() as i64),
+                ((x2 * 1.0e6).round() as i64, (y2 * 1.0e6).round() as i64),
+            );
+            let key_rev = (
+                ((x2 * 1.0e6).round() as i64, (y2 * 1.0e6).round() as i64),
+                ((x1 * 1.0e6).round() as i64, (y1 * 1.0e6).round() as i64),
+            );
+            assert!(
+                transposed.contains(&key) || transposed.contains(&key_rev),
+                "no symmetric counterpart for segment (({x1},{y1}),({x2},{y2}))"
+            );
+        }
+    }
+
+    #[test]
+    fn axis_crossings_returns_rounded_extremes_sorted_and_deduplicated() {
+        let segments: Vec<ContourSegment> =
+            vec![((4.7, 50.0), (60.0, 4.7)), ((122.3, 50.0), (60.0, 122.3))];
+        let crossings = axis_crossings(&segments);
+        assert_eq!(crossings, vec![5, 122]);
+    }
+
+    #[test]
+    fn axis_crossings_empty_input_returns_empty() {
+        assert!(axis_crossings(&[]).is_empty());
+    }
 }

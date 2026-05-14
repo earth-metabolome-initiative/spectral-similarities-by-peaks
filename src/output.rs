@@ -253,8 +253,8 @@ impl OutputWriters {
     /// # Errors
     ///
     /// See `finish_with_mode`.
-    pub fn finish(self, progress: &ScanProgress) -> Result<()> {
-        self.finish_with_mode(FinishMode::Aggregate, progress)
+    pub fn finish(self, threshold_alphas: &[f64], progress: &ScanProgress) -> Result<()> {
+        self.finish_with_mode(FinishMode::Aggregate, threshold_alphas, progress)
     }
 
     /// Finalize all Parquet files in the configured mode.
@@ -269,7 +269,12 @@ impl OutputWriters {
     /// Returns an error if flushing buffered rows, building dense arrays,
     /// closing any Parquet writer, saving the grid-matrix slice, or rendering
     /// heatmaps fails.
-    pub fn finish_with_mode(mut self, mode: FinishMode<'_>, progress: &ScanProgress) -> Result<()> {
+    pub fn finish_with_mode(
+        mut self,
+        mode: FinishMode<'_>,
+        threshold_alphas: &[f64],
+        progress: &ScanProgress,
+    ) -> Result<()> {
         let adjacent_progress = progress.spinner("flushing adjacent comparison rows");
         self.flush_adjacent_comparisons()?;
         adjacent_progress.finish();
@@ -312,7 +317,13 @@ impl OutputWriters {
             FinishMode::Aggregate => self.output_dir.as_path(),
             FinishMode::PerConfigShard { canonical_dir } => canonical_dir,
         };
-        write_heatmaps(heatmap_dir, &self.grid_matrices.configs, &arrays, progress)
+        write_heatmaps(
+            heatmap_dir,
+            &self.grid_matrices.configs,
+            &arrays,
+            threshold_alphas,
+            progress,
+        )
     }
 }
 
