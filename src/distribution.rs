@@ -61,6 +61,36 @@ pub fn summarize_sorted_distribution(
     })
 }
 
+/// Return the canonical self-comparison row for one distribution.
+///
+/// A distribution compared against itself produces a zero KS statistic, a
+/// Wasserstein distance of zero, a mean delta of zero, and a p-value of one.
+/// Diagonal cells in the full peak-count comparison grid use this to guarantee
+/// the renderer sees the identity values instead of accidentally drifting on
+/// floating-point edge cases.
+#[must_use]
+pub fn self_comparison(
+    args: &ScanArgs,
+    config: &SimilarityConfig,
+    distribution: &ScoreDistribution,
+) -> DistributionComparison {
+    DistributionComparison {
+        dataset: args.dataset.as_str().to_string(),
+        config: config.name(),
+        metric: config.metric_label(),
+        peak_count_a: distribution.peak_count,
+        peak_count_b: distribution.peak_count,
+        n_scores_a: distribution.scores.len(),
+        n_scores_b: distribution.scores.len(),
+        mean_a: distribution.mean,
+        mean_b: distribution.mean,
+        mean_delta: 0.0,
+        ks_statistic: 0.0,
+        ks_pvalue_asymptotic: 1.0,
+        wasserstein_1d: 0.0,
+    }
+}
+
 /// Compare two adjacent empirical similarity-score distributions.
 pub fn compare_distributions(
     args: &ScanArgs,
@@ -214,6 +244,13 @@ fn ks_asymptotic_pvalue(statistic: f64, n_left: usize, n_right: usize) -> f64 {
     if !statistic.is_finite() || n_left == 0 || n_right == 0 {
         return f64::NAN;
     }
+    // Identical empirical distributions: statistic is exactly 0. The
+    // alternating-series approximation oscillates between +1 and -1 at
+    // lambda=0 and lands at sum=0 after the 100-term cap, which would
+    // misreport p=0 instead of the analytic limit p=1.
+    if statistic == 0.0 {
+        return 1.0;
+    }
     let effective_n = (n_left as f64 * n_right as f64) / (n_left + n_right) as f64;
     let sqrt_n = effective_n.sqrt();
     let lambda = (sqrt_n + 0.12 + 0.11 / sqrt_n) * statistic;
@@ -302,5 +339,15 @@ mod tests {
         let left = [0.0, 1.0, 2.0];
         let right = [1.0, 2.0, 3.0];
         assert!((wasserstein_1d_sorted(&left, &right) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    /// Identical empirical distributions have an asymptotic p-value of 1.
+    fn ks_asymptotic_pvalue_is_one_when_statistic_is_zero() {
+        let pvalue = super::ks_asymptotic_pvalue(0.0, 1024, 1024);
+        assert!(
+            (pvalue - 1.0).abs() < f64::EPSILON,
+            "expected p=1 for identical distributions, got {pvalue}"
+        );
     }
 }

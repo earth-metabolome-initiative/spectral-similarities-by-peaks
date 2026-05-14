@@ -190,6 +190,7 @@ fn heatmap_metrics<'a>(
             values: mean_delta,
             scale: scales.mean_delta_linear,
             palette: colorous::RED_BLUE,
+            diagonal_value: 0.0,
         },
         HeatmapMetric {
             name: "mean_delta_log",
@@ -197,6 +198,7 @@ fn heatmap_metrics<'a>(
             values: mean_delta,
             scale: scales.mean_delta_log,
             palette: colorous::RED_BLUE,
+            diagonal_value: 0.0,
         },
         HeatmapMetric {
             name: "ks_statistic_linear",
@@ -204,6 +206,7 @@ fn heatmap_metrics<'a>(
             values: ks_statistic,
             scale: scales.ks_statistic_linear,
             palette: colorous::VIRIDIS,
+            diagonal_value: 0.0,
         },
         HeatmapMetric {
             name: "ks_statistic_log",
@@ -211,6 +214,7 @@ fn heatmap_metrics<'a>(
             values: ks_statistic,
             scale: scales.ks_statistic_log,
             palette: colorous::VIRIDIS,
+            diagonal_value: 0.0,
         },
         HeatmapMetric {
             name: "ks_pvalue_asymptotic_linear",
@@ -218,6 +222,7 @@ fn heatmap_metrics<'a>(
             values: ks_pvalue_asymptotic,
             scale: scales.ks_pvalue_asymptotic_linear,
             palette: colorous::VIRIDIS,
+            diagonal_value: 1.0,
         },
         HeatmapMetric {
             name: "ks_pvalue_asymptotic_log",
@@ -225,6 +230,7 @@ fn heatmap_metrics<'a>(
             values: ks_pvalue_asymptotic,
             scale: scales.ks_pvalue_asymptotic_log,
             palette: colorous::VIRIDIS,
+            diagonal_value: 1.0,
         },
         HeatmapMetric {
             name: "wasserstein_1d_linear",
@@ -232,6 +238,7 @@ fn heatmap_metrics<'a>(
             values: wasserstein_1d,
             scale: scales.wasserstein_1d_linear,
             palette: colorous::VIRIDIS,
+            diagonal_value: 0.0,
         },
         HeatmapMetric {
             name: "wasserstein_1d_log",
@@ -239,6 +246,7 @@ fn heatmap_metrics<'a>(
             values: wasserstein_1d,
             scale: scales.wasserstein_1d_log,
             palette: colorous::VIRIDIS,
+            diagonal_value: 0.0,
         },
     ]
 }
@@ -384,9 +392,14 @@ fn matrix_cells(metric: &HeatmapMetric<'_>) -> Result<Vec<Rectangle<(i32, i32)>>
         for column in 0..metric.values.ncols() {
             let x0 = usize_to_i32(column + 1)?;
             let y0 = usize_to_i32(row + 1)?;
+            let value = if row == column {
+                metric.diagonal_value
+            } else {
+                metric.values[[row, column]]
+            };
             cells.push(Rectangle::new(
                 [(x0, y0), (x0 + 1, y0 + 1)],
-                metric.color(metric.values[[row, column]]).filled(),
+                metric.color(value).filled(),
             ));
         }
     }
@@ -420,6 +433,13 @@ struct HeatmapMetric<'a> {
     scale: HeatmapScale,
     /// Color palette used to render values.
     palette: Gradient,
+    /// Canonical value to render on the main diagonal regardless of the
+    /// stored matrix entry. A distribution compared against itself has
+    /// `mean_delta=0`, `ks_statistic=0`, `ks_pvalue_asymptotic=1`, and
+    /// `wasserstein_1d=0`; forcing this value here guarantees the diagonal
+    /// always shows identity regardless of any upstream computation bug or
+    /// pre-fix npz contents.
+    diagonal_value: f64,
 }
 
 impl HeatmapMetric<'_> {

@@ -18,7 +18,8 @@ use crate::{
     },
     data::{self, load_dataset_records, load_records},
     distribution::{
-        compare_distributions, histogram_sorted_distribution, summarize_sorted_distribution,
+        compare_distributions, histogram_sorted_distribution, self_comparison,
+        summarize_sorted_distribution,
     },
     model::{
         DistributionSummary, LoadedRecord, PEAK_COUNT_GRID_SIZE, ScoreDistribution,
@@ -1024,12 +1025,16 @@ fn write_grid_comparisons(
         .map(|cell| {
             let row = cell / width;
             let column = cell % width;
-            let comparison = compare_distributions(
-                inputs.args,
-                config,
-                &distributions[row],
-                &distributions[column],
-            );
+            let comparison = if row == column {
+                Ok(self_comparison(inputs.args, config, &distributions[row]))
+            } else {
+                compare_distributions(
+                    inputs.args,
+                    config,
+                    &distributions[row],
+                    &distributions[column],
+                )
+            };
             grid_progress.inc(1);
             comparison
         })
