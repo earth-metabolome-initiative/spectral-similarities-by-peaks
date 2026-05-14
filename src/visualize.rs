@@ -197,7 +197,7 @@ fn heatmap_metrics<'a>(
     [
         HeatmapMetric {
             name: "mean_delta_linear",
-            title: "Mean delta (linear scale)",
+            title: "Δ mean (linear)",
             colorbar_label: "mean delta",
             values: mean_delta,
             scale: scales.mean_delta_linear,
@@ -206,7 +206,7 @@ fn heatmap_metrics<'a>(
         },
         HeatmapMetric {
             name: "mean_delta_log",
-            title: "Mean delta (signed log scale)",
+            title: "Δ mean (signed log)",
             colorbar_label: "mean delta",
             values: mean_delta,
             scale: scales.mean_delta_log,
@@ -215,7 +215,7 @@ fn heatmap_metrics<'a>(
         },
         HeatmapMetric {
             name: "ks_statistic_linear",
-            title: "KS statistic (linear scale)",
+            title: "KS statistic (linear)",
             colorbar_label: "KS",
             values: ks_statistic,
             scale: scales.ks_statistic_linear,
@@ -224,7 +224,7 @@ fn heatmap_metrics<'a>(
         },
         HeatmapMetric {
             name: "ks_statistic_log",
-            title: "KS statistic (log scale)",
+            title: "KS statistic (log)",
             colorbar_label: "KS",
             values: ks_statistic,
             scale: scales.ks_statistic_log,
@@ -233,7 +233,7 @@ fn heatmap_metrics<'a>(
         },
         HeatmapMetric {
             name: "ks_pvalue_asymptotic_linear",
-            title: "Asymptotic KS p-value (linear scale)",
+            title: "KS p-value (linear)",
             colorbar_label: "p-value",
             values: ks_pvalue_asymptotic,
             scale: scales.ks_pvalue_asymptotic_linear,
@@ -242,7 +242,7 @@ fn heatmap_metrics<'a>(
         },
         HeatmapMetric {
             name: "ks_pvalue_asymptotic_log",
-            title: "Asymptotic KS p-value (log scale)",
+            title: "KS p-value (log)",
             colorbar_label: "p-value",
             values: ks_pvalue_asymptotic,
             scale: scales.ks_pvalue_asymptotic_log,
@@ -251,7 +251,7 @@ fn heatmap_metrics<'a>(
         },
         HeatmapMetric {
             name: "wasserstein_1d_linear",
-            title: "1D Wasserstein (linear scale)",
+            title: "Wasserstein (linear)",
             colorbar_label: "Wasserstein",
             values: wasserstein_1d,
             scale: scales.wasserstein_1d_linear,
@@ -260,7 +260,7 @@ fn heatmap_metrics<'a>(
         },
         HeatmapMetric {
             name: "wasserstein_1d_log",
-            title: "1D Wasserstein (log scale)",
+            title: "Wasserstein (log)",
             colorbar_label: "Wasserstein",
             values: wasserstein_1d,
             scale: scales.wasserstein_1d_log,
@@ -331,7 +331,10 @@ where
     let x_end = usize_to_i32(columns + 1)?;
     let y_end = usize_to_i32(rows + 1)?;
     let mut chart = ChartBuilder::on(area)
-        .caption(format!("{config} / {}", metric.title), ("sans-serif", 24))
+        .caption(
+            format!("{} — {}", pretty_config_title(config), metric.title),
+            ("sans-serif", 24),
+        )
         .margin(22)
         .x_label_area_size(48)
         .y_label_area_size(58)
@@ -764,6 +767,132 @@ fn usize_to_i32(value: usize) -> Result<i32> {
 
 /// Peak-count axis tick positions kept on every distribution heatmap.
 const HEATMAP_AXIS_TICKS: &[i32] = &[0, 32, 64, 96, 128];
+
+/// Pretty-print a `SimilarityConfig::name()` slug as a human-readable title.
+///
+/// Drops terms whose exponent is 0 (they contribute the identity 1 to the
+/// weight product) and omits the `^1` suffix when an exponent equals 1.
+/// Examples:
+///
+/// - `cosine_mz0.000_int1.000` → `Cosine, w ∝ intensity`
+/// - `cosine_mz1.000_int0.500` → `Cosine, w ∝ m/z · intensity^0.5`
+/// - `cosine_mz3.000_int0.600` → `Cosine, w ∝ m/z^3 · intensity^0.6`
+/// - `entropy_mz0.000_int1.000_weightedfalse` → `Unweighted entropy, w ∝ intensity`
+fn pretty_config_title(slug: &str) -> String {
+    let (family_kind, rest) = if let Some(rest) = slug.strip_prefix("modified_entropy_") {
+        (PrettyFamily::ModifiedEntropy, rest)
+    } else if let Some(rest) = slug.strip_prefix("entropy_") {
+        (PrettyFamily::Entropy, rest)
+    } else if let Some(rest) = slug.strip_prefix("modified_cosine_") {
+        (PrettyFamily::ModifiedCosine, rest)
+    } else if let Some(rest) = slug.strip_prefix("cosine_") {
+        (PrettyFamily::Cosine, rest)
+    } else {
+        return slug.to_string();
+    };
+
+    let mut mz_power = 0.0_f64;
+    let mut intensity_power = 0.0_f64;
+    let mut weighted = None;
+    for part in rest.split('_') {
+        if let Some(value) = part.strip_prefix("mz") {
+            if let Ok(parsed) = value.parse::<f64>() {
+                mz_power = parsed;
+            }
+        } else if let Some(value) = part.strip_prefix("int") {
+            if let Ok(parsed) = value.parse::<f64>() {
+                intensity_power = parsed;
+            }
+        } else if let Some(value) = part.strip_prefix("weighted") {
+            weighted = Some(value == "true");
+        }
+    }
+
+    let family_label = match (family_kind, weighted) {
+        (PrettyFamily::Cosine, _) => "Cosine",
+        (PrettyFamily::ModifiedCosine, _) => "Modified cosine",
+        (PrettyFamily::Entropy, Some(true)) => "Weighted entropy",
+        (PrettyFamily::Entropy, Some(false)) => "Unweighted entropy",
+        (PrettyFamily::ModifiedEntropy, Some(true)) => "Weighted modified entropy",
+        (PrettyFamily::ModifiedEntropy, Some(false)) => "Unweighted modified entropy",
+        (PrettyFamily::Entropy | PrettyFamily::ModifiedEntropy, None) => return slug.to_string(),
+    };
+
+    let weight_expression = format_weight_expression(mz_power, intensity_power);
+    if weight_expression.is_empty() {
+        family_label.to_string()
+    } else {
+        format!("{family_label}, w ∝ {weight_expression}")
+    }
+}
+
+/// Similarity-family discriminator used while pretty-printing a config slug.
+enum PrettyFamily {
+    /// Linear cosine similarity.
+    Cosine,
+    /// Modified linear cosine similarity (allows m/z shifts).
+    ModifiedCosine,
+    /// Entropy similarity.
+    Entropy,
+    /// Modified entropy similarity.
+    ModifiedEntropy,
+}
+
+/// Render the weighted-peak product for one config, dropping zero-power terms.
+fn format_weight_expression(mz_power: f64, intensity_power: f64) -> String {
+    let mz_part = format_weight_term("m/z", mz_power);
+    let intensity_part = format_weight_term("intensity", intensity_power);
+    match (mz_part.is_empty(), intensity_part.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => intensity_part,
+        (false, true) => mz_part,
+        (false, false) => format!("{mz_part} · {intensity_part}"),
+    }
+}
+
+/// Render one factor of the weight product, omitting `^1` and `^0` exponents.
+fn format_weight_term(name: &str, exponent: f64) -> String {
+    if exponent == 0.0 {
+        String::new()
+    } else if (exponent - 1.0).abs() < f64::EPSILON {
+        name.to_string()
+    } else {
+        format!("{name}^{}", format_exponent(exponent))
+    }
+}
+
+/// Pretty-print a non-trivial exponent, substituting Unicode vulgar-fraction
+/// glyphs when the value matches a common rational number.
+///
+/// `DejaVu Sans` renders these single codepoints as properly stacked fractions
+/// (½, ¼, ⅔, …), giving LaTeX-quality typography in the figure title without
+/// any external math renderer.
+fn format_exponent(value: f64) -> String {
+    const FRACTION_GLYPHS: &[(f64, &str)] = &[
+        (1.0 / 8.0, "⅛"),
+        (1.0 / 6.0, "⅙"),
+        (1.0 / 5.0, "⅕"),
+        (1.0 / 4.0, "¼"),
+        (1.0 / 3.0, "⅓"),
+        (3.0 / 8.0, "⅜"),
+        (2.0 / 5.0, "⅖"),
+        (1.0 / 2.0, "½"),
+        (3.0 / 5.0, "⅗"),
+        (5.0 / 8.0, "⅝"),
+        (2.0 / 3.0, "⅔"),
+        (3.0 / 4.0, "¾"),
+        (4.0 / 5.0, "⅘"),
+        (5.0 / 6.0, "⅚"),
+        (7.0 / 8.0, "⅞"),
+    ];
+    const EXPONENT_FRACTION_TOLERANCE: f64 = 1.0e-6;
+    for (target, glyph) in FRACTION_GLYPHS {
+        if (value - target).abs() < EXPONENT_FRACTION_TOLERANCE {
+            return (*glyph).to_string();
+        }
+    }
+    format!("{value}")
+}
 
 /// Return a filesystem-safe path component.
 pub fn sanitize_path_component(raw: &str) -> PathBuf {
