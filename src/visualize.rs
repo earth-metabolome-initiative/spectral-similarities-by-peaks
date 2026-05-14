@@ -341,8 +341,8 @@ where
     chart
         .configure_mesh()
         .disable_mesh()
-        .x_desc("Peak count B")
-        .y_desc("Peak count A")
+        .x_desc("Top peaks retained")
+        .y_desc("Top peaks retained")
         .x_labels(usize::try_from(x_end).unwrap_or(usize::MAX))
         .y_labels(usize::try_from(y_end).unwrap_or(usize::MAX))
         .x_label_formatter(&|value| {
