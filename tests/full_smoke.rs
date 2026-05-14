@@ -822,10 +822,14 @@ fn assert_heatmap_artifacts(output_dir: &Path) -> Result<(), Box<dyn Error>> {
         "modified_entropy_mz0.000_int1.000_weightedfalse",
     ] {
         for metric in [
-            "mean_delta",
-            "ks_statistic",
-            "ks_pvalue_asymptotic",
-            "wasserstein_1d",
+            "mean_delta_linear",
+            "mean_delta_log",
+            "ks_statistic_linear",
+            "ks_statistic_log",
+            "ks_pvalue_asymptotic_linear",
+            "ks_pvalue_asymptotic_log",
+            "wasserstein_1d_linear",
+            "wasserstein_1d_log",
         ] {
             let stem = output_dir.join("heatmaps").join(config).join(metric);
             assert_svg_artifact(&stem.with_extension("svg"))?;
@@ -841,10 +845,14 @@ fn assert_single_config_heatmap_artifacts(
     config: &str,
 ) -> Result<(), Box<dyn Error>> {
     for metric in [
-        "mean_delta",
-        "ks_statistic",
-        "ks_pvalue_asymptotic",
-        "wasserstein_1d",
+        "mean_delta_linear",
+        "mean_delta_log",
+        "ks_statistic_linear",
+        "ks_statistic_log",
+        "ks_pvalue_asymptotic_linear",
+        "ks_pvalue_asymptotic_log",
+        "wasserstein_1d_linear",
+        "wasserstein_1d_log",
     ] {
         let stem = output_dir.join("heatmaps").join(config).join(metric);
         assert_svg_artifact(&stem.with_extension("svg"))?;

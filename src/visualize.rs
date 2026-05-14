@@ -46,7 +46,7 @@ const LOG_MINIMUM_POSITIVE: f64 = f64::MIN_POSITIVE;
 const SIGNED_LOG_LINEAR_FRACTION: f64 = 1.0e-3;
 
 /// Number of rendered metrics per similarity configuration.
-const HEATMAP_METRIC_COUNT: usize = 4;
+const HEATMAP_METRIC_COUNT: usize = 8;
 
 /// Environment variable that may point to a TrueType or OpenType font file.
 const HEATMAP_FONT_ENV_VAR: &str = "SPECTRAL_SIMILARITIES_FONT";
@@ -168,40 +168,76 @@ fn validate_config_axis(configs: &[String], arrays: &GridArrays) -> Result<()> {
 }
 
 /// Return metric views for one similarity config.
+///
+/// Each underlying metric is emitted twice — once with a linear value scale
+/// and once with a (signed-)logarithmic scale — so downstream artifacts always
+/// include both views side-by-side.
 fn heatmap_metrics<'a>(
     arrays: &'a GridArrays,
     scales: &'a HeatmapScales,
     config_index: usize,
-) -> [HeatmapMetric<'a>; 4] {
+) -> [HeatmapMetric<'a>; 8] {
+    let mean_delta = arrays.mean_delta.index_axis(Axis(0), config_index);
+    let ks_statistic = arrays.ks_statistic.index_axis(Axis(0), config_index);
+    let ks_pvalue_asymptotic = arrays
+        .ks_pvalue_asymptotic
+        .index_axis(Axis(0), config_index);
+    let wasserstein_1d = arrays.wasserstein_1d.index_axis(Axis(0), config_index);
     [
         HeatmapMetric {
-            name: "mean_delta",
-            title: "Mean delta (signed log scale)",
-            values: arrays.mean_delta.index_axis(Axis(0), config_index),
-            scale: scales.mean_delta,
+            name: "mean_delta_linear",
+            title: "Mean delta (linear scale)",
+            values: mean_delta,
+            scale: scales.mean_delta_linear,
             palette: colorous::RED_BLUE,
         },
         HeatmapMetric {
-            name: "ks_statistic",
+            name: "mean_delta_log",
+            title: "Mean delta (signed log scale)",
+            values: mean_delta,
+            scale: scales.mean_delta_log,
+            palette: colorous::RED_BLUE,
+        },
+        HeatmapMetric {
+            name: "ks_statistic_linear",
+            title: "KS statistic (linear scale)",
+            values: ks_statistic,
+            scale: scales.ks_statistic_linear,
+            palette: colorous::VIRIDIS,
+        },
+        HeatmapMetric {
+            name: "ks_statistic_log",
             title: "KS statistic (log scale)",
-            values: arrays.ks_statistic.index_axis(Axis(0), config_index),
-            scale: scales.ks_statistic,
+            values: ks_statistic,
+            scale: scales.ks_statistic_log,
             palette: colorous::VIRIDIS,
         },
         HeatmapMetric {
-            name: "ks_pvalue_asymptotic",
+            name: "ks_pvalue_asymptotic_linear",
+            title: "Asymptotic KS p-value (linear scale)",
+            values: ks_pvalue_asymptotic,
+            scale: scales.ks_pvalue_asymptotic_linear,
+            palette: colorous::VIRIDIS,
+        },
+        HeatmapMetric {
+            name: "ks_pvalue_asymptotic_log",
             title: "Asymptotic KS p-value (log scale)",
-            values: arrays
-                .ks_pvalue_asymptotic
-                .index_axis(Axis(0), config_index),
-            scale: scales.ks_pvalue_asymptotic,
+            values: ks_pvalue_asymptotic,
+            scale: scales.ks_pvalue_asymptotic_log,
             palette: colorous::VIRIDIS,
         },
         HeatmapMetric {
-            name: "wasserstein_1d",
+            name: "wasserstein_1d_linear",
+            title: "1D Wasserstein (linear scale)",
+            values: wasserstein_1d,
+            scale: scales.wasserstein_1d_linear,
+            palette: colorous::VIRIDIS,
+        },
+        HeatmapMetric {
+            name: "wasserstein_1d_log",
             title: "1D Wasserstein (log scale)",
-            values: arrays.wasserstein_1d.index_axis(Axis(0), config_index),
-            scale: scales.wasserstein_1d,
+            values: wasserstein_1d,
+            scale: scales.wasserstein_1d_log,
             palette: colorous::VIRIDIS,
         },
     ]
@@ -403,37 +439,50 @@ impl HeatmapMetric<'_> {
 }
 
 /// Shared value scales for all rendered metrics.
+///
+/// Every metric carries both a linear and a (signed-)logarithmic scale so we
+/// can render the two side-by-side in `heatmap_metrics`.
 struct HeatmapScales {
-    /// Signed logarithmic scale for mean-delta heatmaps.
-    mean_delta: HeatmapScale,
+    /// Linear diverging scale for mean-delta heatmaps, centered at zero.
+    mean_delta_linear: HeatmapScale,
+    /// Signed logarithmic diverging scale for mean-delta heatmaps.
+    mean_delta_log: HeatmapScale,
+    /// Linear sequential scale for `KS` statistic heatmaps.
+    ks_statistic_linear: HeatmapScale,
     /// Global logarithmic scale for `KS` statistic heatmaps.
-    ks_statistic: HeatmapScale,
+    ks_statistic_log: HeatmapScale,
+    /// Linear sequential scale for asymptotic `KS` p-value heatmaps.
+    ks_pvalue_asymptotic_linear: HeatmapScale,
     /// Global logarithmic scale for asymptotic `KS` p-value heatmaps.
-    ks_pvalue_asymptotic: HeatmapScale,
+    ks_pvalue_asymptotic_log: HeatmapScale,
+    /// Linear sequential scale for `Wasserstein` heatmaps.
+    wasserstein_1d_linear: HeatmapScale,
     /// Global logarithmic scale for `Wasserstein` heatmaps.
-    wasserstein_1d: HeatmapScale,
+    wasserstein_1d_log: HeatmapScale,
 }
 
 impl HeatmapScales {
     /// Build global scales from all dense matrices.
     fn from_arrays(arrays: &GridArrays) -> Self {
+        let mean_delta_abs = max_abs(&arrays.mean_delta.view());
+        let ks_min = finite_min(&arrays.ks_statistic.view()).unwrap_or(0.0);
+        let ks_pos_min = finite_positive_min(&arrays.ks_statistic.view()).unwrap_or(1.0);
+        let ks_max = finite_max(&arrays.ks_statistic.view()).unwrap_or(1.0);
+        let pv_min = finite_min(&arrays.ks_pvalue_asymptotic.view()).unwrap_or(0.0);
+        let pv_pos_min = finite_positive_min(&arrays.ks_pvalue_asymptotic.view()).unwrap_or(1.0);
+        let pv_max = finite_max(&arrays.ks_pvalue_asymptotic.view()).unwrap_or(1.0);
+        let ws_min = finite_min(&arrays.wasserstein_1d.view()).unwrap_or(0.0);
+        let ws_pos_min = finite_positive_min(&arrays.wasserstein_1d.view()).unwrap_or(1.0);
+        let ws_max = finite_max(&arrays.wasserstein_1d.view()).unwrap_or(1.0);
         Self {
-            mean_delta: HeatmapScale::signed_log_diverging_zero(max_abs(&arrays.mean_delta.view())),
-            ks_statistic: HeatmapScale::log_sequential(
-                finite_min(&arrays.ks_statistic.view()).unwrap_or(0.0),
-                finite_positive_min(&arrays.ks_statistic.view()).unwrap_or(1.0),
-                finite_max(&arrays.ks_statistic.view()).unwrap_or(1.0),
-            ),
-            ks_pvalue_asymptotic: HeatmapScale::log_sequential(
-                finite_min(&arrays.ks_pvalue_asymptotic.view()).unwrap_or(0.0),
-                finite_positive_min(&arrays.ks_pvalue_asymptotic.view()).unwrap_or(1.0),
-                finite_max(&arrays.ks_pvalue_asymptotic.view()).unwrap_or(1.0),
-            ),
-            wasserstein_1d: HeatmapScale::log_sequential(
-                finite_min(&arrays.wasserstein_1d.view()).unwrap_or(0.0),
-                finite_positive_min(&arrays.wasserstein_1d.view()).unwrap_or(1.0),
-                finite_max(&arrays.wasserstein_1d.view()).unwrap_or(1.0),
-            ),
+            mean_delta_linear: HeatmapScale::signed_diverging_zero(mean_delta_abs),
+            mean_delta_log: HeatmapScale::signed_log_diverging_zero(mean_delta_abs),
+            ks_statistic_linear: HeatmapScale::sequential(ks_min, ks_max),
+            ks_statistic_log: HeatmapScale::log_sequential(ks_min, ks_pos_min, ks_max),
+            ks_pvalue_asymptotic_linear: HeatmapScale::sequential(pv_min, pv_max),
+            ks_pvalue_asymptotic_log: HeatmapScale::log_sequential(pv_min, pv_pos_min, pv_max),
+            wasserstein_1d_linear: HeatmapScale::sequential(ws_min, ws_max),
+            wasserstein_1d_log: HeatmapScale::log_sequential(ws_min, ws_pos_min, ws_max),
         }
     }
 }
@@ -463,6 +512,11 @@ enum HeatmapScale {
         maximum_abs: f64,
         /// Linear neighborhood around zero before the logarithmic region.
         linear_threshold: f64,
+    },
+    /// Linear diverging scale centered at zero with a symmetric absolute bound.
+    SignedDivergingZero {
+        /// Absolute bound on both sides of zero.
+        maximum_abs: f64,
     },
 }
 
@@ -511,6 +565,16 @@ impl HeatmapScale {
         }
     }
 
+    /// Create a zero-centered linear diverging scale.
+    fn signed_diverging_zero(maximum_abs: f64) -> Self {
+        let maximum_abs = if maximum_abs.is_finite() && maximum_abs > 0.0 {
+            maximum_abs
+        } else {
+            1.0
+        };
+        Self::SignedDivergingZero { maximum_abs }
+    }
+
     /// Normalize a value to a `[0, 1]` palette coordinate.
     fn normalize(self, value: f64) -> f64 {
         match self {
@@ -537,6 +601,10 @@ impl HeatmapScale {
                 let signed = clipped.signum() * (clipped.abs() / linear_threshold).ln_1p()
                     / (maximum_abs / linear_threshold).ln_1p();
                 (0.5_f64).mul_add(signed, 0.5).clamp(0.0, 1.0)
+            }
+            Self::SignedDivergingZero { maximum_abs } => {
+                let clipped = value.clamp(-maximum_abs, maximum_abs);
+                ((clipped / (2.0 * maximum_abs)) + 0.5).clamp(0.0, 1.0)
             }
         }
     }
@@ -571,6 +639,9 @@ impl HeatmapScale {
                 let magnitude = linear_threshold
                     * ((maximum_abs / linear_threshold).ln_1p() * signed_position.abs()).exp_m1();
                 signed_position.signum() * magnitude
+            }
+            Self::SignedDivergingZero { maximum_abs } => {
+                (2.0 * maximum_abs).mul_add(position, -maximum_abs)
             }
         }
     }
