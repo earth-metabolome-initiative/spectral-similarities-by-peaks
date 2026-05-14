@@ -451,12 +451,42 @@ where
 
     // The plotters default mesh renders only the canonical axis ticks in
     // black. Per-curve crossing ticks are drawn manually below in the
-    // matching curve color.
-    let tick_label = |value: &f64| {
+    // matching curve color. To avoid a stale black tick peeking through
+    // when a curve's asymptote happens to land exactly on a default tick
+    // (e.g., D-curve at 32), we collect the set of default tick values
+    // that will be overlaid by a colored draw and suppress them in the
+    // appropriate axis formatter.
+    let mut x_axis_overlaid: Vec<i32> = Vec::new();
+    let mut y_axis_overlaid: Vec<i32> = Vec::new();
+    for curve in overlay.curves {
+        for &tick in &curve.x_axis_ticks {
+            if HEATMAP_AXIS_TICKS.contains(&tick) && !x_axis_overlaid.contains(&tick) {
+                x_axis_overlaid.push(tick);
+            }
+        }
+        for &tick in &curve.y_axis_ticks {
+            if HEATMAP_AXIS_TICKS.contains(&tick) && !y_axis_overlaid.contains(&tick) {
+                y_axis_overlaid.push(tick);
+            }
+        }
+    }
+    let x_overlaid = &x_axis_overlaid;
+    let y_overlaid = &y_axis_overlaid;
+    let x_tick_label = |value: &f64| {
         let rounded = value.round();
         if (value - rounded).abs() < 1.0e-6 {
             let as_int = rounded as i32;
-            if HEATMAP_AXIS_TICKS.contains(&as_int) {
+            if HEATMAP_AXIS_TICKS.contains(&as_int) && !x_overlaid.contains(&as_int) {
+                return as_int.to_string();
+            }
+        }
+        String::new()
+    };
+    let y_tick_label = |value: &f64| {
+        let rounded = value.round();
+        if (value - rounded).abs() < 1.0e-6 {
+            let as_int = rounded as i32;
+            if HEATMAP_AXIS_TICKS.contains(&as_int) && !y_overlaid.contains(&as_int) {
                 return as_int.to_string();
             }
         }
@@ -471,8 +501,8 @@ where
         .y_desc("Top peaks retained")
         .x_labels(x_end_usize)
         .y_labels(y_end_usize)
-        .x_label_formatter(&tick_label)
-        .y_label_formatter(&tick_label)
+        .x_label_formatter(&x_tick_label)
+        .y_label_formatter(&y_tick_label)
         .axis_desc_style(("sans-serif", 20 * RENDER_SCALE))
         .label_style(("sans-serif", 16 * RENDER_SCALE))
         .draw()
@@ -554,17 +584,14 @@ where
             .color(&curve.color)
             .pos(Pos::new(HPos::Right, VPos::Center));
         for &tick in &curve.x_axis_ticks {
-            if HEATMAP_AXIS_TICKS.iter().any(|d| (tick - d).abs() < 1) {
-                continue;
-            }
+            // Always draw — when the asymptote tick coincides with a
+            // default tick value (e.g., 32, 64), the colored label overlays
+            // the plotters-default black one, effectively colorizing it.
             let (tick_px, _) = chart.backend_coord(&(f64::from(tick), 0.0));
             area.draw_text(&tick.to_string(), &style_x, (tick_px, x_label_y))
                 .map_err(plotters_error)?;
         }
         for &tick in &curve.y_axis_ticks {
-            if HEATMAP_AXIS_TICKS.iter().any(|d| (tick - d).abs() < 1) {
-                continue;
-            }
             let (_, tick_py) = chart.backend_coord(&(0.0, f64::from(tick)));
             area.draw_text(&tick.to_string(), &style_y, (y_label_x, tick_py))
                 .map_err(plotters_error)?;
