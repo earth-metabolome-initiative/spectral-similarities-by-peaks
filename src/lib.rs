@@ -19,6 +19,10 @@ mod output;
 mod pathway;
 /// Derived pathway-prediction summaries and visualizations.
 mod pathway_artifacts;
+/// AUROC / AUPRC of pathway-pair similarity scores.
+mod pathway_discriminability;
+/// Per-config diversity ranking from the KS-statistic grid.
+mod config_diversity;
 /// Progress-bar helpers for long-running local scans.
 mod progress;
 /// Top-level command orchestration.

@@ -57,6 +57,10 @@ pub enum Commands {
     RenderHeatmaps(RenderHeatmapArgs),
     /// Rebuild pathway prediction summaries and plots from an existing scan.
     RenderPathwayArtifacts(RenderPathwayArtifactArgs),
+    /// Compute per-config AUROC / AUPRC of pathway-pair similarity scores.
+    ComputePathwayDiscriminability(ComputePathwayDiscriminabilityArgs),
+    /// Rank similarity configs by the mean KS statistic of their distribution grid.
+    ComputeConfigDiversity(ComputeConfigDiversityArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -202,6 +206,22 @@ pub struct RenderHeatmapArgs {
 /// Arguments for the `render-pathway-artifacts` subcommand.
 pub struct RenderPathwayArtifactArgs {
     /// Existing scan output directory with `pathway_predictions.parquet`.
+    #[arg(long, default_value = "results")]
+    pub output_dir: PathBuf,
+}
+
+#[derive(Debug, Parser)]
+/// Arguments for the `compute-pathway-discriminability` subcommand.
+pub struct ComputePathwayDiscriminabilityArgs {
+    /// Existing scan output directory with `pathway_scores.parquet`.
+    #[arg(long, default_value = "results")]
+    pub output_dir: PathBuf,
+}
+
+#[derive(Debug, Parser)]
+/// Arguments for the `compute-config-diversity` subcommand.
+pub struct ComputeConfigDiversityArgs {
+    /// Existing scan output directory with `distribution_grid.npz`.
     #[arg(long, default_value = "results")]
     pub output_dir: PathBuf,
 }

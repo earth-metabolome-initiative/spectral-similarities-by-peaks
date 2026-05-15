@@ -1222,6 +1222,36 @@ pub fn plotters_error<Error: std::fmt::Debug>(error: Error) -> anyhow::Error {
 /// `(c + 0.5, r + 0.5)`.
 type ContourSegment = ((f64, f64), (f64, f64));
 
+/// Return the peak-count value at which the `threshold`-level contour of a
+/// single config's KS-statistic grid hits the right edge of the plot (i.e.,
+/// its horizontal asymptote, in peak-count units, shifted by `+1` to match
+/// the chart's cell-offset convention). Returns `None` when the contour
+/// does not separate sufficiently from the main diagonal — same convergence
+/// gate as the colored axis-tick labels.
+pub fn ks_statistic_asymptote(grid: &ArrayView2<f64>, threshold: f64) -> Option<i32> {
+    let mut owned: Array2<f64> = grid.to_owned();
+    mask_main_diagonal(&mut owned);
+    let segments = extract_contour(&owned.view(), threshold);
+    if segments.is_empty() {
+        return None;
+    }
+    let mut max_x = f64::NEG_INFINITY;
+    let mut y_at_max_x = 0.0_f64;
+    for &((x1, y1), (x2, y2)) in &segments {
+        for (x, y) in [(x1, y1), (x2, y2)] {
+            if x > max_x {
+                max_x = x;
+                y_at_max_x = y;
+            }
+        }
+    }
+    if max_x - y_at_max_x > ASYMPTOTE_MIN_DIAGONAL_OFFSET {
+        Some((y_at_max_x.round() as i32) + 1)
+    } else {
+        None
+    }
+}
+
 /// Set every self-comparison cell (`row == col`) of `grid` to NaN, so
 /// `extract_contour` skips every 2×2 quad that touches the main diagonal.
 /// The diagonal carries metric-specific singularities (`p = 1`, `D = 0`,

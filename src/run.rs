@@ -53,6 +53,10 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::FinalizeMerge(args) => run_finalize_merge(args),
         Commands::RenderHeatmaps(args) => run_render_heatmaps(args),
         Commands::RenderPathwayArtifacts(args) => run_render_pathway_artifacts(&args),
+        Commands::ComputePathwayDiscriminability(args) => {
+            run_compute_pathway_discriminability(&args)
+        }
+        Commands::ComputeConfigDiversity(args) => run_compute_config_diversity(&args),
     }
 }
 
@@ -90,6 +94,22 @@ fn run_render_heatmaps(mut args: RenderHeatmapArgs) -> Result<()> {
 fn run_render_pathway_artifacts(args: &RenderPathwayArtifactArgs) -> Result<()> {
     let progress = ScanProgress::new();
     write_existing_pathway_prediction_artifacts(&args.output_dir, &progress)
+}
+
+/// Compute AUROC / AUPRC of pathway-pair scores from an existing scan output.
+fn run_compute_pathway_discriminability(
+    args: &crate::cli::ComputePathwayDiscriminabilityArgs,
+) -> Result<()> {
+    let progress = ScanProgress::new();
+    crate::pathway_discriminability::write_pathway_discriminability(&args.output_dir, &progress)
+}
+
+/// Compute per-config mean KS statistic and rank configs by "diversity".
+fn run_compute_config_diversity(
+    args: &crate::cli::ComputeConfigDiversityArgs,
+) -> Result<()> {
+    let progress = ScanProgress::new();
+    crate::config_diversity::write_config_diversity(&args.output_dir, &progress)
 }
 
 /// Read dense grid matrices from an existing `distribution_grid.npz` artifact.
@@ -1452,7 +1472,9 @@ mod tests {
             | Commands::FinalizeShard(_)
             | Commands::FinalizeMerge(_)
             | Commands::RenderHeatmaps(_)
-            | Commands::RenderPathwayArtifacts(_) => {
+            | Commands::RenderPathwayArtifacts(_)
+            | Commands::ComputePathwayDiscriminability(_)
+            | Commands::ComputeConfigDiversity(_) => {
                 anyhow::bail!("expected scan command")
             }
         }
@@ -1488,7 +1510,11 @@ mod tests {
             | Commands::FinalizeShard(_)
             | Commands::FinalizeMerge(_)
             | Commands::RenderHeatmaps(_)
-            | Commands::RenderPathwayArtifacts(_) => anyhow::bail!("expected scan-shard command"),
+            | Commands::RenderPathwayArtifacts(_)
+            | Commands::ComputePathwayDiscriminability(_)
+            | Commands::ComputeConfigDiversity(_) => {
+                anyhow::bail!("expected scan-shard command")
+            }
         }
     }
 
@@ -1529,7 +1555,11 @@ mod tests {
             | Commands::FinalizeShard(_)
             | Commands::FinalizeMerge(_)
             | Commands::RenderHeatmaps(_)
-            | Commands::RenderPathwayArtifacts(_) => anyhow::bail!("expected scan-shard command"),
+            | Commands::RenderPathwayArtifacts(_)
+            | Commands::ComputePathwayDiscriminability(_)
+            | Commands::ComputeConfigDiversity(_) => {
+                anyhow::bail!("expected scan-shard command")
+            }
         }
     }
 
