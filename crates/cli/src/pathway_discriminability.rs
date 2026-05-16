@@ -1,9 +1,13 @@
 //! Per-config AUROC and AUPRC of pathway-pair similarity scores.
 //!
-//! Reads `pathway_scores.parquet` (one row per `(query, candidate_pathway)`),
-//! labels each row by `query_npc_pathway == candidate_npc_pathway`, and for
-//! each `(config, peak_count)` group computes the area under the
-//! ROC and Precision-Recall curves of similarity scores as classifier of
+//! Reads `pathway_scores.parquet` (the merged file produced by
+//! `finalize-scan`) when present; otherwise walks
+//! `pathway_shards/<config>/top_<k>/pathway_scores.parquet` directly so we
+//! can compute discriminability before merging a transferred shard tree.
+//!
+//! Each row is labelled by `query_npc_pathway == candidate_npc_pathway`, and
+//! for each `(config, peak_count)` group we compute the area under the ROC
+//! and Precision-Recall curves of similarity scores as classifier of
 //! "same-pathway" vs "different-pathway" pairs. Aggregates to a per-config
 //! summary (mean AUROC / AUPRC across peak counts).
 
@@ -14,13 +18,13 @@
     clippy::type_complexity
 )]
 
+use std::cmp::Ordering;
 use std::{
     collections::HashMap,
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
 };
-use std::cmp::Ordering;
 
 use anyhow::{Context, Result, bail};
 use arrow_array::{Array, Float64Array, RecordBatch, StringArray, UInt64Array};
@@ -82,9 +86,7 @@ pub fn auprc(samples: &mut [(f64, bool)]) -> f64 {
         return f64::NAN;
     }
     // Sort by score descending so the top-ranked is at index 0.
-    samples.sort_by(|a, b| {
-        b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal)
-    });
+    samples.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
 
     let mut ap = 0.0_f64;
     let mut tp = 0_usize;
@@ -129,19 +131,30 @@ pub fn auprc(samples: &mut [(f64, bool)]) -> f64 {
 /// Returns an error when the input parquet exists but cannot be opened or
 /// parsed, or when the output parquets cannot be written.
 pub fn write_pathway_discriminability(output_dir: &Path, progress: &ScanProgress) -> Result<()> {
-    let input_path = output_dir.join("pathway_scores.parquet");
-    if !input_path.is_file() {
-        return Ok(());
-    }
-    let file_size = fs::metadata(&input_path).map_or(0, |m| m.len());
-    if file_size < 1024 {
-        // Empty / header-only parquet; nothing to compute.
-        return Ok(());
-    }
+    let merged_path = output_dir.join("pathway_scores.parquet");
+    let merged_size = fs::metadata(&merged_path).map_or(0, |m| m.len());
+    let shard_root = output_dir.join("pathway_shards");
 
-    let read_progress = progress.spinner("reading pathway scores");
-    let groups = read_pathway_scores_grouped(&input_path)?;
-    read_progress.finish();
+    let groups = if merged_path.is_file() && merged_size >= 1024 {
+        let read_progress = progress.spinner("reading pathway scores (merged)");
+        let groups = read_pathway_scores_grouped(&merged_path)?;
+        read_progress.finish();
+        groups
+    } else if shard_root.is_dir() {
+        let shard_paths = collect_pathway_shard_paths(&shard_root)?;
+        if shard_paths.is_empty() {
+            return Ok(());
+        }
+        let read_progress = progress.bar(
+            u64::try_from(shard_paths.len()).unwrap_or(u64::MAX),
+            "reading pathway score shards",
+        );
+        let groups = read_pathway_scores_grouped_from_shards(&shard_paths, &read_progress)?;
+        read_progress.finish();
+        groups
+    } else {
+        return Ok(());
+    };
     if groups.is_empty() {
         return Ok(());
     }
@@ -215,6 +228,60 @@ fn read_pathway_scores_grouped(
     for batch in reader {
         let batch = batch.with_context(|| format!("decoding batch in {}", path.display()))?;
         observe_batch(&batch, &mut groups)?;
+    }
+    Ok(groups)
+}
+
+/// Walk `pathway_shards/<config>/top_<k>/pathway_scores.parquet` and return
+/// every shard file found. Sorted for deterministic progress reporting.
+fn collect_pathway_shard_paths(shard_root: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    let config_entries =
+        fs::read_dir(shard_root).with_context(|| format!("reading {}", shard_root.display()))?;
+    for config_entry in config_entries {
+        let config_entry =
+            config_entry.with_context(|| format!("listing {}", shard_root.display()))?;
+        if !config_entry.file_type()?.is_dir() {
+            continue;
+        }
+        let peak_entries = fs::read_dir(config_entry.path())
+            .with_context(|| format!("reading {}", config_entry.path().display()))?;
+        for peak_entry in peak_entries {
+            let peak_entry =
+                peak_entry.with_context(|| format!("listing {}", config_entry.path().display()))?;
+            if !peak_entry.file_type()?.is_dir() {
+                continue;
+            }
+            let scores = peak_entry.path().join("pathway_scores.parquet");
+            if scores.is_file() {
+                paths.push(scores);
+            }
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+/// Aggregate the per-shard pathway-score Parquet files into a single
+/// `(dataset, config, peak_count) -> samples` map. The shards already carry
+/// the `dataset` / `config` / `peak_count` columns so the grouping logic is
+/// the same as for the merged file.
+fn read_pathway_scores_grouped_from_shards(
+    paths: &[PathBuf],
+    progress: &crate::progress::ProgressTask,
+) -> Result<HashMap<(String, String, u64), Vec<(f64, bool)>>> {
+    let mut groups: HashMap<(String, String, u64), Vec<(f64, bool)>> = HashMap::new();
+    for path in paths {
+        let file = fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+            .with_context(|| format!("reading metadata from {}", path.display()))?
+            .build()
+            .with_context(|| format!("building reader for {}", path.display()))?;
+        for batch in reader {
+            let batch = batch.with_context(|| format!("decoding batch in {}", path.display()))?;
+            observe_batch(&batch, &mut groups)?;
+        }
+        progress.inc(1);
     }
     Ok(groups)
 }
@@ -323,11 +390,23 @@ fn write_cell_rows(output_dir: &Path, rows: &[CellRow]) -> Result<()> {
     let peak_counts: UInt64Array = rows.iter().map(|r| r.peak_count).collect();
     let auroc_values: Float64Array = rows
         .iter()
-        .map(|r| if r.auroc.is_finite() { Some(r.auroc) } else { None })
+        .map(|r| {
+            if r.auroc.is_finite() {
+                Some(r.auroc)
+            } else {
+                None
+            }
+        })
         .collect();
     let auprc_values: Float64Array = rows
         .iter()
-        .map(|r| if r.auprc.is_finite() { Some(r.auprc) } else { None })
+        .map(|r| {
+            if r.auprc.is_finite() {
+                Some(r.auprc)
+            } else {
+                None
+            }
+        })
         .collect();
     let n_pos: UInt64Array = rows.iter().map(|r| r.n_positives).collect();
     let n_neg: UInt64Array = rows.iter().map(|r| r.n_negatives).collect();
@@ -470,7 +549,10 @@ mod tests {
         // AP = 0.5*(1/3) + 0.5*(1/2) = 1/6 + 1/4 = 5/12 ≈ 0.4167
         let expected = 5.0 / 12.0;
         let got = auprc(&mut samples);
-        assert!(approx(got, expected, 1.0e-12), "expected {expected}, got {got}");
+        assert!(
+            approx(got, expected, 1.0e-12),
+            "expected {expected}, got {got}"
+        );
     }
 
     #[test]
@@ -489,7 +571,10 @@ mod tests {
         // P@1 = 1/1, P@3 = 2/3, P@5 = 3/5. AP = (1 + 2/3 + 3/5)/3 = (15 + 10 + 9)/45 = 34/45.
         let expected = 34.0 / 45.0;
         let got = auprc(&mut samples);
-        assert!(approx(got, expected, 1.0e-12), "expected {expected}, got {got}");
+        assert!(
+            approx(got, expected, 1.0e-12),
+            "expected {expected}, got {got}"
+        );
     }
 
     #[test]
@@ -506,6 +591,9 @@ mod tests {
         let mut samples = vec![(0.5, true), (0.5, false), (0.5, true), (0.5, false)];
         let expected = 0.5;
         let got = auprc(&mut samples);
-        assert!(approx(got, expected, 1.0e-12), "expected {expected}, got {got}");
+        assert!(
+            approx(got, expected, 1.0e-12),
+            "expected {expected}, got {got}"
+        );
     }
 }
