@@ -136,7 +136,29 @@ pub fn write_pathway_discriminability(output_dir: &Path, progress: &ScanProgress
     let merged_size = fs::metadata(&merged_path).map_or(0, |m| m.len());
     let shard_root = output_dir.join("pathway_shards");
 
-    let mut cell_rows: Vec<CellRow> = if merged_path.is_file() && merged_size >= 1024 {
+    // Prefer the per-shard tree when it exists. Each shard is exactly one
+    // `(config, peak_count)` cell, so the streaming reader can compute
+    // AUROC / AUPRC one shard at a time and drop the buffer; the merged
+    // path holds every cell's scores in a single in-memory `HashMap`,
+    // which would need hundreds of GB of RAM on the harmonized corpus
+    // (the cluster OOM-killed an earlier run when this branch was
+    // preferred). Fall back to the merged file only when no shard
+    // directory is available.
+    let shard_paths = if shard_root.is_dir() {
+        collect_pathway_shard_paths(&shard_root)?
+    } else {
+        Vec::new()
+    };
+
+    let mut cell_rows: Vec<CellRow> = if !shard_paths.is_empty() {
+        let task = progress.bar(
+            u64::try_from(shard_paths.len()).unwrap_or(u64::MAX),
+            "computing AUROC / AUPRC per shard",
+        );
+        let rows = compute_cells_from_shards(&shard_paths, &task)?;
+        task.finish();
+        rows
+    } else if merged_path.is_file() && merged_size >= 1024 {
         let read_progress = progress.spinner("reading pathway scores (merged)");
         let groups = read_pathway_scores_grouped(&merged_path)?;
         read_progress.finish();
@@ -146,18 +168,6 @@ pub fn write_pathway_discriminability(output_dir: &Path, progress: &ScanProgress
         let compute_progress = progress.spinner("computing AUROC / AUPRC per (config, peak_count)");
         let rows = compute_cells_from_groups(groups);
         compute_progress.finish();
-        rows
-    } else if shard_root.is_dir() {
-        let shard_paths = collect_pathway_shard_paths(&shard_root)?;
-        if shard_paths.is_empty() {
-            return Ok(());
-        }
-        let task = progress.bar(
-            u64::try_from(shard_paths.len()).unwrap_or(u64::MAX),
-            "computing AUROC / AUPRC per shard",
-        );
-        let rows = compute_cells_from_shards(&shard_paths, &task)?;
-        task.finish();
         rows
     } else {
         return Ok(());
