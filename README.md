@@ -80,6 +80,7 @@ bash slurm/lrc/prefetch.sh harmonized
 bash slurm/lrc/submit.sh harmonized
 bash slurm/lrc/status.sh harmonized 60
 bash slurm/lrc/finalize.sh harmonized
+bash slurm/lrc/compute_pathway_discriminability.sh harmonized
 bash slurm/lrc/cancel.sh harmonized
 ```
 
@@ -93,6 +94,8 @@ bash slurm/lrc/cancel.sh gems
 ```
 
 The Lawrencium workflow first prefetches the dataset cache, then submits `18 x 128 = 2304` restartable shard jobs. Each shard computes one `(similarity_config, retained_peak_count)` checkpoint under `distributions/<config>/top_<k>.bincode.zst`. Once the shard grid is complete, `finalize.sh` submits an 18-task array (one shard per similarity config, each running `finalize-shard` and writing to `_finalize_shards/<config>/`) followed by a single dependent merge job (`finalize-merge`) that concatenates the per-config outputs into the canonical top-level Parquet, NumPy, heatmap, and pathway artifacts.
+
+For the AUROC / AUPRC pathway-classification metrics, `slurm/lrc/compute_pathway_discriminability.sh` submits a single job that streams `pathway_shards/<config>/top_<k>/pathway_scores.parquet` and emits `pathway_discriminability.parquet` plus `pathway_discriminability_summary.parquet`. The streaming reader processes one shard at a time so it runs comfortably on a single node even when the merged `pathway_scores.parquet` would be too large. The output is a few MB, so pulling just those two parquets back from the cluster afterwards avoids transferring the underlying hundreds of GB of pairwise scores.
 
 Use `bash slurm/lrc/cancel.sh all --include-legacy` to cancel all spectral jobs, including old generic `spectral-shard` arrays, and remove interrupted temporary checkpoint files.
 

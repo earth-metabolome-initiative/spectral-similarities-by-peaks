@@ -14,7 +14,10 @@ LOGS_DIR="$SCRATCH_ROOT/logs"
 usage() {
     cat <<'USAGE'
 Usage:
-  bash slurm/lrc/compute_pathway_discriminability.sh <harmonized|gems> [OPTIONS]
+  bash slurm/lrc/compute_pathway_discriminability.sh harmonized [OPTIONS]
+
+Only the `harmonized` preset is supported because pathway classification
+requires NPC pathway annotations, which the GeMS-A10 corpus does not have.
 
 Options:
   --partition=PART      SLURM partition (default: lr6)
@@ -43,7 +46,6 @@ DRY_RUN=false
 
 case "$PRESET" in
     harmonized) OUTPUT_DIR="results/harmonized-full" ;;
-    gems)       OUTPUT_DIR="results/gems-sampled"   ;;
     -h|--help)  usage; exit 0 ;;
     *)          echo "Unknown preset: $PRESET"; usage; exit 1 ;;
 esac
