@@ -154,18 +154,14 @@ fn collect_parquets(root: &Path) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        for entry in fs::read_dir(&dir)
-            .with_context(|| format!("reading {}", dir.display()))?
-        {
+        for entry in fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))? {
             let entry = entry.with_context(|| format!("listing {}", dir.display()))?;
             let entry_path = entry.path();
             let file_type = entry.file_type()?;
             if file_type.is_dir() {
                 stack.push(entry_path);
             } else if file_type.is_file()
-                && entry_path
-                    .extension()
-                    .is_some_and(|ext| ext == "parquet")
+                && entry_path.extension().is_some_and(|ext| ext == "parquet")
             {
                 paths.push(entry_path);
             }
@@ -190,11 +186,14 @@ fn re_encode_parquet(path: &Path) -> Result<()> {
     let schema = reader.schema();
 
     let temp = path.with_extension("parquet.zstd-tmp");
-    let tmp_file = fs::File::create(&temp)
-        .with_context(|| format!("creating {}", temp.display()))?;
-    let mut writer =
-        ArrowWriter::try_new(tmp_file, schema, Some(crate::output::parquet_writer_props()))
-            .with_context(|| format!("opening writer for {}", temp.display()))?;
+    let tmp_file =
+        fs::File::create(&temp).with_context(|| format!("creating {}", temp.display()))?;
+    let mut writer = ArrowWriter::try_new(
+        tmp_file,
+        schema,
+        Some(crate::output::parquet_writer_props()),
+    )
+    .with_context(|| format!("opening writer for {}", temp.display()))?;
     for batch in reader {
         let batch = batch.with_context(|| format!("decoding batch in {}", path.display()))?;
         writer
