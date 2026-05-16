@@ -1,0 +1,11 @@
+[application]
+name = "spectral-web"
+out_dir = "dist"
+asset_dir = "public"
+
+[web.app]
+title = "Spectral similarity heatmaps"
+base_path = "/spectral-similarities-by-peaks/"
+
+[web.watcher]
+watch_path = ["src", "public"]

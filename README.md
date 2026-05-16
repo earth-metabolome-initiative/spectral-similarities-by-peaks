@@ -134,6 +134,44 @@ target/release/spectral-similarities-by-peaks render-pathway-artifacts \
   --output-dir results/harmonized-full
 ```
 
+## Web viewer
+
+The repo also ships a small Dioxus + WebAssembly viewer that renders any of
+the 8 heatmaps per config on demand in the browser. It fetches a dataset's
+`distribution_grid.npz` (~9 MB) and re-uses the same `plotters` pipeline as
+the CLI compiled to WASM, so changing the dataset, similarity config,
+metric, or α threshold redraws an SVG client-side without any server.
+
+The live build is deployed to GitHub Pages at
+[earth-metabolome-initiative.github.io/spectral-similarities-by-peaks](https://earth-metabolome-initiative.github.io/spectral-similarities-by-peaks/).
+
+To run it locally:
+
+```bash
+cargo install dioxus-cli --version 0.7.9 --locked  # one-off
+rustup target add wasm32-unknown-unknown            # one-off
+cd crates/web
+dx serve --profile wasm-release --platform web
+# open http://localhost:8080/spectral-similarities-by-peaks/
+```
+
+The `wasm-release` profile (defined in the workspace `Cargo.toml`) strips
+DWARF debug info before `wasm-opt` runs, sidestepping the `compile unit
+size was incorrect` SIGABRT seen with recent rustc + older binaryen
+builds.
+
+Committed viewer payload lives under `crates/web/public/data/`:
+
+- `manifest.json` — list of available datasets.
+- `<slug>/distribution_grid.npz` — the dense `(configs × 128 × 128)` arrays
+  used at runtime.
+- `<slug>/distribution_grid_configs.json` — config-axis labels (converted
+  once from `distribution_grid_configs.parquet`).
+
+To refresh the viewer with a new dataset, drop the npz into a new slug
+directory and regenerate the JSON labels from the parquet (any one-off
+pyarrow / arrow-rs snippet works).
+
 ## Per-config diversity ranking
 
 The `compute-config-diversity` subcommand reduces a finished scan's

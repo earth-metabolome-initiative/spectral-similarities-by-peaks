@@ -1,0 +1,46 @@
+[package]
+name = "spectral-web"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Browser viewer for spectral-similarity heatmaps, rendered client-side via WASM."
+
+[dependencies]
+dioxus = { version = "0.7", features = ["web"] }
+dioxus-free-icons = { version = "0.10", features = ["font-awesome-solid", "font-awesome-brands"] }
+spectral-render = { path = "../render" }
+ndarray = "0.17"
+ndarray-npy = "0.10"
+gloo-net = { version = "0.6", features = ["http"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wasm-bindgen-futures = "0.4"
+console_error_panic_hook = "0.1"
+
+[lints.rust]
+missing_docs = "deny"
+unsafe_code = "deny"
+warnings = "deny"
+
+[lints.rustdoc]
+bare_urls = "deny"
+broken_intra_doc_links = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+multiple_crate_versions = "allow"
+cargo_common_metadata = "allow"
+missing_docs_in_private_items = "allow"
+expect_used = "allow"
+unwrap_used = "allow"
+# wasm-bindgen futures are intentionally not Send (single-threaded JS runtime).
+future_not_send = "allow"
+# Map/clone false positives with Dioxus signal/closure captures.
+map_unwrap_or = "allow"
+redundant_clone = "allow"

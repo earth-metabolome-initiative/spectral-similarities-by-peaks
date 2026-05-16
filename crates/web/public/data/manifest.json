@@ -1,0 +1,16 @@
+{
+  "datasets": [
+    {
+      "slug": "harmonized-full",
+      "label": "harmonized-full",
+      "configs_url": "data/harmonized-full/distribution_grid_configs.json",
+      "grid_url": "data/harmonized-full/distribution_grid.npz"
+    },
+    {
+      "slug": "gems-sampled",
+      "label": "gems-sampled",
+      "configs_url": "data/gems-sampled/distribution_grid_configs.json",
+      "grid_url": "data/gems-sampled/distribution_grid.npz"
+    }
+  ]
+}

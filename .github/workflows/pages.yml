@@ -1,0 +1,82 @@
+name: Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  DIOXUS_CLI_VERSION: "0.7.9"
+
+jobs:
+  build:
+    name: Build web viewer
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/git
+            ~/.cargo/registry
+            target
+          key: ${{ runner.os }}-pages-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pages-
+
+      - name: Install dioxus-cli
+        run: |
+          if ! dx --version 2>/dev/null | grep -q "${DIOXUS_CLI_VERSION}"; then
+            cargo install dioxus-cli --version "${DIOXUS_CLI_VERSION}" --locked
+          fi
+
+      - name: Build web viewer
+        working-directory: crates/web
+        run: dx build --profile wasm-release --platform web
+
+      - name: Stage Pages artifact
+        run: |
+          set -euo pipefail
+          # dx emits the served root under target/dx/spectral-web/release/web/public/
+          OUT="target/dx/spectral-web/release/web/public"
+          test -d "${OUT}" || (echo "missing build output at ${OUT}" && exit 1)
+          # Drop a .nojekyll so Pages serves files starting with underscore literally.
+          touch "${OUT}/.nojekyll"
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/dx/spectral-web/release/web/public
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,270 @@
+:root {
+    --bg: #f6f0e6;
+    --surface: rgba(255, 252, 247, 0.94);
+    --surface-strong: rgba(255, 255, 255, 0.98);
+    --line: rgba(20, 34, 41, 0.1);
+    --line-strong: rgba(20, 34, 41, 0.17);
+    --text: #15232b;
+    --muted: #627077;
+    --blue: #205e8c;
+    --rust: #dea584;
+    --green: #38755a;
+    --red: #9d4133;
+    --shadow: 0 18px 48px rgba(27, 44, 54, 0.08);
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "IBM Plex Sans", "Avenir Next", sans-serif;
+    font-size: 16px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+}
+
+.page {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 2rem 1.25rem 4rem;
+}
+
+.hero {
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 1rem;
+}
+
+.eyebrow {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--muted);
+    margin: 0 0 0.5rem 0;
+}
+
+.hero-title {
+    font-family: "Syne", "IBM Plex Sans", sans-serif;
+    font-weight: 700;
+    font-size: 2.9rem;
+    letter-spacing: -0.01em;
+    line-height: 1.05;
+    margin: 0 0 0.6rem 0;
+}
+
+.hero-accent { color: var(--rust); }
+
+.tagline {
+    color: var(--muted);
+    margin: 0 0 1rem 0;
+    max-width: 60ch;
+}
+
+.abstract {
+    margin: 0 0 1.25rem 0;
+    color: var(--text);
+    width: 100%;
+    font-size: 0.95rem;
+    line-height: 1.6;
+    text-align: justify;
+    text-justify: inter-word;
+    hyphens: auto;
+    overflow-wrap: break-word;
+}
+
+.abstract em {
+    font-style: italic;
+    color: var(--text);
+}
+
+.pill-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.45rem 0.85rem;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: rgba(20, 34, 41, 0.05);
+    color: var(--text);
+    font-size: 14px;
+    font-family: inherit;
+    cursor: pointer;
+    user-select: none;
+    transition: background 80ms ease, border-color 80ms ease, color 80ms ease, opacity 80ms ease;
+}
+
+.pill:hover { border-color: var(--line-strong); }
+
+.pill.is-active {
+    background: var(--blue);
+    border-color: var(--blue);
+    color: #fff;
+}
+
+/* Per-axis tone variants: idle pills get a faint tint hinting at their
+   category; active pills swap to the solid tone color. */
+.pill.tone-blue { background: rgba(32, 94, 140, 0.08); border-color: rgba(32, 94, 140, 0.22); }
+.pill.tone-blue.is-active { background: var(--blue); border-color: var(--blue); color: #fff; }
+
+.pill.tone-rust { background: rgba(222, 165, 132, 0.18); border-color: rgba(222, 165, 132, 0.45); }
+.pill.tone-rust.is-active { background: var(--rust); border-color: var(--rust); color: #2f1c0d; }
+
+.pill.tone-green { background: rgba(56, 117, 90, 0.1); border-color: rgba(56, 117, 90, 0.3); }
+.pill.tone-green.is-active { background: var(--green); border-color: var(--green); color: #fff; }
+
+.pill.tone-red { background: rgba(157, 65, 51, 0.08); border-color: rgba(157, 65, 51, 0.28); }
+.pill.tone-red.is-active { background: var(--red); border-color: var(--red); color: #fff; }
+
+.pill.is-disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
+.pill .pill-icon {
+    width: 1em;
+    height: 1em;
+    color: currentColor;
+}
+
+.panel {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 20px;
+    padding: 1.25rem;
+    box-shadow: var(--shadow);
+    margin-top: 1.5rem;
+}
+
+.panel-head {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    margin-bottom: 0.4rem;
+}
+
+.panel-icon {
+    color: var(--muted);
+    width: 1.1em;
+    height: 1.1em;
+}
+
+.panel-title {
+    font-weight: 700;
+    font-size: 1.05rem;
+    margin: 0;
+}
+
+.panel-subtitle {
+    color: var(--muted);
+    margin: 0 0 1rem 0;
+    font-size: 0.95rem;
+}
+
+.field-row {
+    display: grid;
+    grid-template-columns: 9rem 1fr;
+    gap: 0.4rem 1rem;
+    align-items: center;
+    margin-bottom: 0.6rem;
+}
+
+.field-label {
+    color: var(--muted);
+    font-size: 12px;
+    font-family: "IBM Plex Mono", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.alpha-slider {
+    width: 100%;
+    accent-color: var(--blue);
+}
+
+/* Datalist tick rendering: keep the slider thumb visible above the ticks
+   and inherit decade labels from the option `label` attribute when the
+   browser supports it. */
+.alpha-slider::-webkit-slider-runnable-track,
+.alpha-slider::-moz-range-track {
+    height: 0.4rem;
+}
+
+.alpha-value {
+    color: var(--muted);
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 13px;
+    min-width: 4.5rem;
+    text-align: right;
+}
+
+.heatmap-figure {
+    margin: 0.5rem 0 0 0;
+}
+
+.heatmap-frame {
+    width: 100%;
+}
+
+.heatmap-frame svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 78vh;
+}
+
+.figure-caption {
+    display: block;
+    width: 100%;
+    margin: 0.85rem 0 0 0;
+    color: var(--muted);
+    font-size: 0.9rem;
+    line-height: 1.6;
+    text-align: justify;
+    text-justify: inter-word;
+    hyphens: auto;
+    overflow-wrap: break-word;
+    word-break: normal;
+}
+
+/* Inline the waveform icon at the start of the justified caption so it
+   doesn't break the text alignment of the surrounding paragraph. */
+.figure-caption .panel-icon {
+    vertical-align: -2px;
+    margin-right: 0.4rem;
+}
+
+.error {
+    color: var(--red);
+    background: rgba(157, 65, 51, 0.07);
+    border: 1px solid rgba(157, 65, 51, 0.2);
+    padding: 0.6rem 0.9rem;
+    border-radius: 12px;
+    margin: 0;
+}
+
+.muted { color: var(--muted); }
+
+.loading {
+    color: var(--muted);
+    font-style: italic;
+    margin: 0;
+}
+
+a, a:visited {
+    color: var(--blue);
+    text-decoration: none;
+    border-bottom: 1px solid rgba(32, 94, 140, 0.3);
+}
+
+a:hover { border-bottom-color: var(--blue); }
