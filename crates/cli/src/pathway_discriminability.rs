@@ -135,56 +135,41 @@ pub fn write_pathway_discriminability(output_dir: &Path, progress: &ScanProgress
     let merged_size = fs::metadata(&merged_path).map_or(0, |m| m.len());
     let shard_root = output_dir.join("pathway_shards");
 
-    let groups = if merged_path.is_file() && merged_size >= 1024 {
+    let mut cell_rows: Vec<CellRow> = if merged_path.is_file() && merged_size >= 1024 {
         let read_progress = progress.spinner("reading pathway scores (merged)");
         let groups = read_pathway_scores_grouped(&merged_path)?;
         read_progress.finish();
-        groups
+        if groups.is_empty() {
+            return Ok(());
+        }
+        let compute_progress = progress.spinner("computing AUROC / AUPRC per (config, peak_count)");
+        let rows = compute_cells_from_groups(groups);
+        compute_progress.finish();
+        rows
     } else if shard_root.is_dir() {
         let shard_paths = collect_pathway_shard_paths(&shard_root)?;
         if shard_paths.is_empty() {
             return Ok(());
         }
-        let read_progress = progress.bar(
+        let task = progress.bar(
             u64::try_from(shard_paths.len()).unwrap_or(u64::MAX),
-            "reading pathway score shards",
+            "computing AUROC / AUPRC per shard",
         );
-        let groups = read_pathway_scores_grouped_from_shards(&shard_paths, &read_progress)?;
-        read_progress.finish();
-        groups
+        let rows = compute_cells_from_shards(&shard_paths, &task)?;
+        task.finish();
+        rows
     } else {
         return Ok(());
     };
-    if groups.is_empty() {
+    if cell_rows.is_empty() {
         return Ok(());
     }
-
-    let compute_progress = progress.spinner("computing AUROC / AUPRC per (config, peak_count)");
-    let mut cell_rows: Vec<CellRow> = groups
-        .into_par_iter()
-        .map(|((dataset, config, peak_count), mut samples)| {
-            let n_pos = samples.iter().filter(|(_, label)| *label).count();
-            let n_neg = samples.len() - n_pos;
-            let auroc_value = auroc(&mut samples);
-            let auprc_value = auprc(&mut samples);
-            CellRow {
-                dataset,
-                config,
-                peak_count,
-                auroc: auroc_value,
-                auprc: auprc_value,
-                n_positives: n_pos as u64,
-                n_negatives: n_neg as u64,
-            }
-        })
-        .collect();
     cell_rows.sort_by(|a, b| {
         a.dataset
             .cmp(&b.dataset)
             .then(a.config.cmp(&b.config))
             .then(a.peak_count.cmp(&b.peak_count))
     });
-    compute_progress.finish();
 
     let summary_rows = summarize_per_config(&cell_rows);
 
@@ -262,28 +247,70 @@ fn collect_pathway_shard_paths(shard_root: &Path) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-/// Aggregate the per-shard pathway-score Parquet files into a single
-/// `(dataset, config, peak_count) -> samples` map. The shards already carry
-/// the `dataset` / `config` / `peak_count` columns so the grouping logic is
-/// the same as for the merged file.
-fn read_pathway_scores_grouped_from_shards(
+/// Stream every shard in `paths` in parallel, computing AUROC / AUPRC for
+/// each shard's `(dataset, config, peak_count)` group and dropping the
+/// per-shard buffer before moving on.
+///
+/// Each shard file is exactly one `(config, peak_count)` cell of pairwise
+/// scores (one cell can hold tens of millions of rows), so loading them
+/// all simultaneously is not viable at cluster scale. The streaming
+/// per-shard approach keeps peak memory at roughly `rayon` thread count
+/// times the largest cell's score buffer.
+fn compute_cells_from_shards(
     paths: &[PathBuf],
     progress: &crate::progress::ProgressTask,
-) -> Result<HashMap<(String, String, u64), Vec<(f64, bool)>>> {
-    let mut groups: HashMap<(String, String, u64), Vec<(f64, bool)>> = HashMap::new();
-    for path in paths {
-        let file = fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
-        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-            .with_context(|| format!("reading metadata from {}", path.display()))?
-            .build()
-            .with_context(|| format!("building reader for {}", path.display()))?;
-        for batch in reader {
-            let batch = batch.with_context(|| format!("decoding batch in {}", path.display()))?;
-            observe_batch(&batch, &mut groups)?;
-        }
-        progress.inc(1);
-    }
-    Ok(groups)
+) -> Result<Vec<CellRow>> {
+    paths
+        .par_iter()
+        .map(|path| {
+            let mut groups: HashMap<(String, String, u64), Vec<(f64, bool)>> = HashMap::new();
+            let file =
+                fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+            let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+                .with_context(|| format!("reading metadata from {}", path.display()))?
+                .build()
+                .with_context(|| format!("building reader for {}", path.display()))?;
+            for batch in reader {
+                let batch =
+                    batch.with_context(|| format!("decoding batch in {}", path.display()))?;
+                observe_batch(&batch, &mut groups)?;
+            }
+            let rows = compute_cells_from_groups(groups);
+            progress.inc(1);
+            Ok::<Vec<CellRow>, anyhow::Error>(rows)
+        })
+        .reduce(
+            || Ok(Vec::new()),
+            |a, b| {
+                let mut a = a?;
+                a.extend(b?);
+                Ok(a)
+            },
+        )
+}
+
+/// Compute one `CellRow` per `(dataset, config, peak_count)` group, in place.
+fn compute_cells_from_groups(
+    groups: HashMap<(String, String, u64), Vec<(f64, bool)>>,
+) -> Vec<CellRow> {
+    groups
+        .into_par_iter()
+        .map(|((dataset, config, peak_count), mut samples)| {
+            let n_pos = samples.iter().filter(|(_, label)| *label).count();
+            let n_neg = samples.len() - n_pos;
+            let auroc_value = auroc(&mut samples);
+            let auprc_value = auprc(&mut samples);
+            CellRow {
+                dataset,
+                config,
+                peak_count,
+                auroc: auroc_value,
+                auprc: auprc_value,
+                n_positives: n_pos as u64,
+                n_negatives: n_neg as u64,
+            }
+        })
+        .collect()
 }
 
 fn observe_batch(
