@@ -67,7 +67,11 @@ pub fn write_config_diversity(output_dir: &Path, progress: &ScanProgress) -> Res
             }
         })
         .collect();
-    rows.sort_by(|a, b| b.mean_d.partial_cmp(&a.mean_d).unwrap_or(std::cmp::Ordering::Equal));
+    rows.sort_by(|a, b| {
+        b.mean_d
+            .partial_cmp(&a.mean_d)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     print_ranking(&rows);
 
@@ -120,10 +124,10 @@ fn off_diagonal_mean_and_stddev(grid: &ndarray::ArrayView2<f64>) -> (f64, f64, u
 
 fn read_inputs(output_dir: &Path) -> Result<(Vec<String>, Array3<f64>)> {
     let npz_path = output_dir.join("distribution_grid.npz");
-    let file = fs::File::open(&npz_path)
-        .with_context(|| format!("opening {}", npz_path.display()))?;
-    let mut reader = NpzReader::new(file)
-        .with_context(|| format!("reading {}", npz_path.display()))?;
+    let file =
+        fs::File::open(&npz_path).with_context(|| format!("opening {}", npz_path.display()))?;
+    let mut reader =
+        NpzReader::new(file).with_context(|| format!("reading {}", npz_path.display()))?;
     let ks_statistic: Array3<f64> = reader.by_name("ks_statistic.npy")?;
 
     let configs_path = output_dir.join("distribution_grid_configs.parquet");
@@ -153,8 +157,8 @@ fn read_config_labels(path: &Path) -> Result<Vec<String>> {
             .downcast_ref::<StringArray>()
             .context("config column has unexpected type")?;
         for row in 0..batch.num_rows() {
-            let index = usize::try_from(indices.value(row))
-                .context("config_index does not fit usize")?;
+            let index =
+                usize::try_from(indices.value(row)).context("config_index does not fit usize")?;
             pairs.push((index, names.value(row).to_string()));
         }
     }
@@ -168,9 +172,7 @@ fn print_ranking(rows: &[DiversityRow]) {
         "{:>4}  {:<50}  {:>10}  {:>10}  {:>9}  {:>9}  {:>9}",
         "rank", "config", "mean D", "stddev D", "D=0.10 pk", "D=0.05 pk", "D=0.01 pk"
     );
-    let fmt_peak = |peak: Option<i32>| {
-        peak.map_or_else(|| "—".to_string(), |v| v.to_string())
-    };
+    let fmt_peak = |peak: Option<i32>| peak.map_or_else(|| "—".to_string(), |v| v.to_string());
     for (rank, row) in rows.iter().enumerate() {
         println!(
             "{:>4}  {:<50}  {:>10.5}  {:>10.5}  {:>9}  {:>9}  {:>9}",

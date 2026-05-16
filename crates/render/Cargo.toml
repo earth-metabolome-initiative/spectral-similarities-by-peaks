@@ -1,0 +1,16 @@
+[package]
+name = "spectral-render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "WASM-compatible heatmap rendering for the spectral-similarities-by-peaks experiments."
+
+[dependencies]
+anyhow = "1"
+colorous = "1"
+ndarray = "0.17"
+plotters = { version = "0.3", default-features = false, features = ["ab_glyph", "line_series", "svg_backend"] }
+
+[lints]
+workspace = true

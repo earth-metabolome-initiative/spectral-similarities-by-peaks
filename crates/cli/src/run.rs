@@ -105,9 +105,7 @@ fn run_compute_pathway_discriminability(
 }
 
 /// Compute per-config mean KS statistic and rank configs by "diversity".
-fn run_compute_config_diversity(
-    args: &crate::cli::ComputeConfigDiversityArgs,
-) -> Result<()> {
+fn run_compute_config_diversity(args: &crate::cli::ComputeConfigDiversityArgs) -> Result<()> {
     let progress = ScanProgress::new();
     crate::config_diversity::write_config_diversity(&args.output_dir, &progress)
 }

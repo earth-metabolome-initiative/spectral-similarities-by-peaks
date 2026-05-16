@@ -5,6 +5,8 @@
 mod checkpoint;
 /// Command-line argument parsing and value conversion.
 pub mod cli;
+/// Per-config diversity ranking from the KS-statistic grid.
+mod config_diversity;
 /// Dataset loading and conversion into local records.
 mod data;
 /// Empirical distribution summaries and adjacent cutoff comparisons.
@@ -21,8 +23,6 @@ mod pathway;
 mod pathway_artifacts;
 /// AUROC / AUPRC of pathway-pair similarity scores.
 mod pathway_discriminability;
-/// Per-config diversity ranking from the KS-statistic grid.
-mod config_diversity;
 /// Progress-bar helpers for long-running local scans.
 mod progress;
 /// Top-level command orchestration.
