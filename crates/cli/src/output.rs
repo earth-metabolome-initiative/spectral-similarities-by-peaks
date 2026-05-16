@@ -13,6 +13,8 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use ndarray::{Array1, Array3};
 use ndarray_npy::NpzWriter;
 use parquet::arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder};
+use parquet::basic::{Compression, ZstdLevel};
+use parquet::file::properties::WriterProperties;
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
@@ -34,6 +36,25 @@ const GRID_MATRIX_COMPRESSION_LEVEL: i32 = 6;
 const PATHWAY_SCORE_SHARD_FILE: &str = "pathway_scores.parquet";
 /// File name for per-shard pathway best-label predictions.
 const PATHWAY_PREDICTION_SHARD_FILE: &str = "pathway_predictions.parquet";
+
+/// Internal parquet compression level used by every writer in the crate.
+///
+/// A 10-shard sample of harmonized-full's `pathway_scores.parquet` files
+/// (originally written with the parquet crate's default codec) re-compressed
+/// at zstd-22 averaged 0.142 — i.e. 85.8 % size reduction. Using zstd
+/// internally on every parquet keeps random columnar access (the file is
+/// still valid parquet) while capturing most of that benefit. Level 11 is
+/// a pragmatic middle: ratio within ~2 % of level 22, but ~10 × faster.
+const PARQUET_ZSTD_LEVEL: i32 = 11;
+
+/// Build the [`WriterProperties`] used by every `ArrowWriter` in the crate.
+#[must_use]
+pub fn parquet_writer_props() -> WriterProperties {
+    let level = ZstdLevel::try_new(PARQUET_ZSTD_LEVEL).unwrap_or_default();
+    WriterProperties::builder()
+        .set_compression(Compression::ZSTD(level))
+        .build()
+}
 
 /// Return whether both pathway shard files exist for a config and peak count.
 #[must_use]
@@ -344,7 +365,7 @@ impl ParquetTableWriter {
     fn create_at_path(path: &Path, schema: SchemaRef) -> Result<Self> {
         let file =
             fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
-        let writer = ArrowWriter::try_new(file, schema, None)
+        let writer = ArrowWriter::try_new(file, schema, Some(parquet_writer_props()))
             .with_context(|| format!("opening Parquet writer for {}", path.display()))?;
         Ok(Self { writer })
     }
@@ -556,10 +577,16 @@ fn build_grid_arrays(buffer: &GridMatrixBuffer) -> Result<GridArrays> {
 }
 
 /// Write dense full-grid arrays into `distribution_grid.npz`.
+///
+/// The `.npz` payload is written with Deflate compression
+/// (`NpzWriter::new_compressed`) to match the new zstd default on the
+/// parquet side. `numpy.savez_compressed` and `ndarray_npy::NpzReader`
+/// (both native and the WASM viewer) both read the deflated stream
+/// transparently, so no caller needs to opt in.
 fn write_grid_npz(output_dir: &Path, arrays: &GridArrays) -> Result<()> {
     let path = output_dir.join("distribution_grid.npz");
     let file = fs::File::create(&path).with_context(|| format!("creating {}", path.display()))?;
-    let mut writer = NpzWriter::new(file);
+    let mut writer = NpzWriter::new_compressed(file);
     writer.add_array("peak_counts", &arrays.peak_counts)?;
     writer.add_array("mean_delta", &arrays.mean_delta)?;
     writer.add_array("ks_statistic", &arrays.ks_statistic)?;

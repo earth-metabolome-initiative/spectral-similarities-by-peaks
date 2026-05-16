@@ -32,6 +32,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use parquet::arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder};
 use rayon::prelude::*;
 
+use crate::output::parquet_writer_props;
 use crate::progress::ScanProgress;
 
 /// Compute the area under the ROC curve (AUROC) of a binary-labelled score
@@ -452,7 +453,7 @@ fn write_cell_rows(output_dir: &Path, rows: &[CellRow]) -> Result<()> {
     )
     .with_context(|| format!("building record batch for {}", path.display()))?;
     let file = fs::File::create(&path).with_context(|| format!("creating {}", path.display()))?;
-    let mut writer = ArrowWriter::try_new(file, schema, None)
+    let mut writer = ArrowWriter::try_new(file, schema, Some(parquet_writer_props()))
         .with_context(|| format!("opening writer for {}", path.display()))?;
     writer
         .write(&batch)
@@ -489,7 +490,7 @@ fn write_summary_rows(output_dir: &Path, rows: &[SummaryRow]) -> Result<()> {
     )
     .with_context(|| format!("building record batch for {}", path.display()))?;
     let file = fs::File::create(&path).with_context(|| format!("creating {}", path.display()))?;
-    let mut writer = ArrowWriter::try_new(file, schema, None)
+    let mut writer = ArrowWriter::try_new(file, schema, Some(parquet_writer_props()))
         .with_context(|| format!("opening writer for {}", path.display()))?;
     writer
         .write(&batch)

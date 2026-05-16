@@ -1,6 +1,10 @@
 //! Command execution for the experiment binary.
 
-use std::{collections::BTreeSet, fs, path::Path};
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, bail};
 use arrow_array::{RecordBatch, StringArray, UInt64Array};
@@ -57,6 +61,7 @@ pub fn run(cli: Cli) -> Result<()> {
             run_compute_pathway_discriminability(&args)
         }
         Commands::ComputeConfigDiversity(args) => run_compute_config_diversity(&args),
+        Commands::ReEncodeParquets(args) => run_re_encode_parquets(&args),
     }
 }
 
@@ -108,6 +113,100 @@ fn run_compute_pathway_discriminability(
 fn run_compute_config_diversity(args: &crate::cli::ComputeConfigDiversityArgs) -> Result<()> {
     let progress = ScanProgress::new();
     crate::config_diversity::write_config_diversity(&args.output_dir, &progress)
+}
+
+/// Walk every `.parquet` under `args.output_dir` and rewrite it in place
+/// using this crate's default zstd compression.
+///
+/// Existing artifacts produced by older versions of the binary used the
+/// parquet crate's default (Snappy) codec; a 10-shard sample of
+/// `pathway_scores.parquet` showed an 85.8 % size reduction when re-encoded
+/// at zstd-22. This subcommand applies the same in-place re-encoding via
+/// streaming reads + writes so the result is still valid `.parquet`
+/// (random columnar access preserved, unlike a bare `zstd --rm` wrap).
+fn run_re_encode_parquets(args: &crate::cli::ReEncodeParquetsArgs) -> Result<()> {
+    use rayon::prelude::*;
+
+    let root = &args.output_dir;
+    if !root.is_dir() {
+        anyhow::bail!("{} is not a directory", root.display());
+    }
+    let paths = collect_parquets(root)?;
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let progress = ScanProgress::new();
+    let task = progress.bar(
+        u64::try_from(paths.len()).unwrap_or(u64::MAX),
+        "re-encoding parquets",
+    );
+    paths.par_iter().try_for_each(|path| -> Result<()> {
+        re_encode_parquet(path)?;
+        task.inc(1);
+        Ok(())
+    })?;
+    task.finish();
+    Ok(())
+}
+
+/// Recursively gather every `.parquet` file under `root` (sorted).
+fn collect_parquets(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir)
+            .with_context(|| format!("reading {}", dir.display()))?
+        {
+            let entry = entry.with_context(|| format!("listing {}", dir.display()))?;
+            let entry_path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                stack.push(entry_path);
+            } else if file_type.is_file()
+                && entry_path
+                    .extension()
+                    .is_some_and(|ext| ext == "parquet")
+            {
+                paths.push(entry_path);
+            }
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+/// Read a parquet file batch-by-batch and rewrite it in place using the
+/// crate's default `WriterProperties`. Streaming so per-file memory stays
+/// bounded by a single record batch.
+fn re_encode_parquet(path: &Path) -> Result<()> {
+    use arrow_array::RecordBatchReader;
+    use parquet::arrow::ArrowWriter;
+
+    let file = fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .with_context(|| format!("reading metadata from {}", path.display()))?
+        .build()
+        .with_context(|| format!("building reader for {}", path.display()))?;
+    let schema = reader.schema();
+
+    let temp = path.with_extension("parquet.zstd-tmp");
+    let tmp_file = fs::File::create(&temp)
+        .with_context(|| format!("creating {}", temp.display()))?;
+    let mut writer =
+        ArrowWriter::try_new(tmp_file, schema, Some(crate::output::parquet_writer_props()))
+            .with_context(|| format!("opening writer for {}", temp.display()))?;
+    for batch in reader {
+        let batch = batch.with_context(|| format!("decoding batch in {}", path.display()))?;
+        writer
+            .write(&batch)
+            .with_context(|| format!("writing batch to {}", temp.display()))?;
+    }
+    writer
+        .close()
+        .with_context(|| format!("finalizing {}", temp.display()))?;
+    fs::rename(&temp, path)
+        .with_context(|| format!("replacing {} with re-encoded copy", path.display()))?;
+    Ok(())
 }
 
 /// Read dense grid matrices from an existing `distribution_grid.npz` artifact.
@@ -1472,7 +1571,8 @@ mod tests {
             | Commands::RenderHeatmaps(_)
             | Commands::RenderPathwayArtifacts(_)
             | Commands::ComputePathwayDiscriminability(_)
-            | Commands::ComputeConfigDiversity(_) => {
+            | Commands::ComputeConfigDiversity(_)
+            | Commands::ReEncodeParquets(_) => {
                 anyhow::bail!("expected scan command")
             }
         }
@@ -1510,7 +1610,8 @@ mod tests {
             | Commands::RenderHeatmaps(_)
             | Commands::RenderPathwayArtifacts(_)
             | Commands::ComputePathwayDiscriminability(_)
-            | Commands::ComputeConfigDiversity(_) => {
+            | Commands::ComputeConfigDiversity(_)
+            | Commands::ReEncodeParquets(_) => {
                 anyhow::bail!("expected scan-shard command")
             }
         }
@@ -1555,7 +1656,8 @@ mod tests {
             | Commands::RenderHeatmaps(_)
             | Commands::RenderPathwayArtifacts(_)
             | Commands::ComputePathwayDiscriminability(_)
-            | Commands::ComputeConfigDiversity(_) => {
+            | Commands::ComputeConfigDiversity(_)
+            | Commands::ReEncodeParquets(_) => {
                 anyhow::bail!("expected scan-shard command")
             }
         }

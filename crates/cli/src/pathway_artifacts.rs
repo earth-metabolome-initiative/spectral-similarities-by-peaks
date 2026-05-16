@@ -21,6 +21,8 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use ndarray::{Array1, Array3, ArrayView2, Axis};
 use ndarray_npy::NpzWriter;
 use parquet::{arrow::ArrowWriter, arrow::arrow_reader::ParquetRecordBatchReaderBuilder};
+
+use crate::output::parquet_writer_props;
 use plotters::{
     coord::Shift,
     prelude::{
@@ -638,7 +640,7 @@ fn write_distribution_grid_npz(
 ) -> Result<()> {
     let path = output_dir.join("pathway_prediction_distribution_grid.npz");
     let file = fs::File::create(&path).with_context(|| format!("creating {}", path.display()))?;
-    let mut writer = NpzWriter::new(file);
+    let mut writer = NpzWriter::new_compressed(file);
     writer.add_array("peak_counts", &arrays.peak_counts)?;
     writer.add_array("total_variation", &arrays.total_variation)?;
     writer.add_array("jensen_shannon_distance", &arrays.jensen_shannon_distance)?;
@@ -659,7 +661,7 @@ fn write_distribution_grid_configs(output_dir: &Path, rows: &[PathwayConfigRow])
 /// Write one Parquet file containing a single record batch.
 fn write_parquet(path: &Path, schema: SchemaRef, batch: &RecordBatch) -> Result<()> {
     let file = fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
-    let mut writer = ArrowWriter::try_new(file, schema, None)
+    let mut writer = ArrowWriter::try_new(file, schema, Some(parquet_writer_props()))
         .with_context(|| format!("opening Parquet writer for {}", path.display()))?;
     if batch.num_rows() > 0 {
         writer.write(batch)?;

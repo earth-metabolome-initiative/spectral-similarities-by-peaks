@@ -23,6 +23,7 @@ use ndarray_npy::NpzReader;
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
+use crate::output::parquet_writer_props;
 use crate::progress::ScanProgress;
 
 /// Read `distribution_grid.npz` and `distribution_grid_configs.parquet`,
@@ -229,7 +230,7 @@ fn write_diversity_parquet(output_dir: &Path, rows: &[DiversityRow]) -> Result<(
         ],
     )?;
     let file = fs::File::create(&path).with_context(|| format!("creating {}", path.display()))?;
-    let mut writer = ArrowWriter::try_new(file, schema, None)
+    let mut writer = ArrowWriter::try_new(file, schema, Some(parquet_writer_props()))
         .with_context(|| format!("opening writer for {}", path.display()))?;
     writer.write(&batch)?;
     writer.close()?;

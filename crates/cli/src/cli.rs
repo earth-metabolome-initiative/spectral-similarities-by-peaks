@@ -61,6 +61,9 @@ pub enum Commands {
     ComputePathwayDiscriminability(ComputePathwayDiscriminabilityArgs),
     /// Rank similarity configs by the mean KS statistic of their distribution grid.
     ComputeConfigDiversity(ComputeConfigDiversityArgs),
+    /// Rewrite every `.parquet` under an output directory using this crate's
+    /// default zstd codec, preserving random columnar access.
+    ReEncodeParquets(ReEncodeParquetsArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -222,6 +225,15 @@ pub struct ComputePathwayDiscriminabilityArgs {
 /// Arguments for the `compute-config-diversity` subcommand.
 pub struct ComputeConfigDiversityArgs {
     /// Existing scan output directory with `distribution_grid.npz`.
+    #[arg(long, default_value = "results")]
+    pub output_dir: PathBuf,
+}
+
+#[derive(Debug, Parser)]
+/// Arguments for the `re-encode-parquets` subcommand.
+pub struct ReEncodeParquetsArgs {
+    /// Root directory under which every `.parquet` file is rewritten in
+    /// place using this crate's default zstd compression.
     #[arg(long, default_value = "results")]
     pub output_dir: PathBuf,
 }
