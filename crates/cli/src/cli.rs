@@ -61,6 +61,9 @@ pub enum Commands {
     ComputePathwayDiscriminability(ComputePathwayDiscriminabilityArgs),
     /// Render AUROC / AUPRC line plots from `pathway_discriminability.parquet`.
     RenderPathwayDiscriminability(RenderPathwayDiscriminabilityArgs),
+    /// Export pathway-discriminability parquets as a compact JSON file for
+    /// the WASM viewer.
+    ExportPathwayDiscriminabilityJson(ExportPathwayDiscriminabilityJsonArgs),
     /// Rank similarity configs by the mean KS statistic of their distribution grid.
     ComputeConfigDiversity(ComputeConfigDiversityArgs),
     /// Rewrite every `.parquet` under an output directory using this crate's
@@ -234,6 +237,18 @@ pub struct ComputePathwayDiscriminabilityArgs {
 /// Arguments for the `render-pathway-discriminability` subcommand.
 pub struct RenderPathwayDiscriminabilityArgs {
     /// Existing output directory with `pathway_discriminability.parquet`.
+    #[arg(long, default_value = "results")]
+    pub output_dir: PathBuf,
+}
+
+#[derive(Debug, Parser)]
+/// Arguments for the `export-pathway-discriminability-json` subcommand.
+pub struct ExportPathwayDiscriminabilityJsonArgs {
+    /// Existing output directory containing
+    /// `pathway_discriminability.parquet` and
+    /// `pathway_discriminability_per_class.parquet`. The JSON is written
+    /// alongside those parquets as
+    /// `pathway_discriminability_lines.json`.
     #[arg(long, default_value = "results")]
     pub output_dir: PathBuf,
 }

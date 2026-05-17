@@ -23,6 +23,8 @@ mod pathway;
 mod pathway_artifacts;
 /// AUROC / AUPRC of pathway-pair similarity scores.
 mod pathway_discriminability;
+/// JSON export of pathway-discriminability parquets for the WASM viewer.
+mod pathway_discriminability_export;
 /// Per-metric line plots of pathway-pair AUROC / AUPRC.
 mod pathway_discriminability_plots;
 /// Progress-bar helpers for long-running local scans.
