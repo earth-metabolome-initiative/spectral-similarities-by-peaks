@@ -1,9 +1,19 @@
 //! Line plots of AUROC / AUPRC pathway-pair discriminability per config.
 //!
-//! Consumes `pathway_discriminability.parquet` (per
-//! `(dataset, config, peak_count)`) produced by
-//! `compute-pathway-discriminability` and emits one chart per metric in
-//! the output directory's `pathway_discriminability_plots/` subdirectory.
+//! Consumes `pathway_discriminability.parquet` (the micro-averaged
+//! aggregate over every `(query, candidate)` pair, pooled per
+//! `(dataset, config, peak_count)`) and
+//! `pathway_discriminability_per_class.parquet` (the one-vs-rest split
+//! per `(dataset, config, peak_count, pathway)`) produced by
+//! `compute-pathway-discriminability`, and emits two artifact families
+//! under the output directory's `pathway_discriminability_plots/`
+//! subdirectory:
+//!
+//! - `auroc.{svg,png}` and `auprc.{svg,png}` at the subdirectory root —
+//!   the pooled (micro-averaged) classifier across all queries.
+//! - `per_class/<pathway_slug>/{auroc,auprc}.{svg,png}` — the per-pathway
+//!   one-vs-rest curves, one chart family per pathway.
+//!
 //! Each chart draws one line per similarity config: colour encodes the
 //! metric family (cosine / modified-cosine / entropy / modified-entropy),
 //! dash pattern encodes the m/z exponent (0.0 → solid, 1.0 → dashed,
@@ -33,7 +43,7 @@ use plotters::{
 use crate::{
     pathway_artifacts::{LINE_PLOT_HEIGHT, LINE_PLOT_WIDTH, usize_to_i32},
     progress::ScanProgress,
-    visualize::{ensure_heatmap_font, plotters_error},
+    visualize::{ensure_heatmap_font, plotters_error, sanitize_path_component},
 };
 
 /// Subdirectory holding the rendered discriminability plots.
@@ -49,40 +59,97 @@ const COLOR_ENTROPY: RGBColor = RGBColor(0x2c, 0xa0, 0x2c);
 /// Modified entropy family colour.
 const COLOR_MODIFIED_ENTROPY: RGBColor = RGBColor(0xd6, 0x27, 0x28);
 
-/// Read `pathway_discriminability.parquet` and write per-metric line plots.
+/// Read `pathway_discriminability.parquet` and
+/// `pathway_discriminability_per_class.parquet` and write per-metric line
+/// plots: a micro-averaged aggregate at the root of the plots directory
+/// plus one one-vs-rest chart pair per pathway under `per_class/`.
 ///
-/// Silently returns `Ok(())` if the parquet is missing, empty, or contains
-/// no finite values — these states correspond to datasets without
-/// pathway annotations (e.g. gems-sampled) and should not abort the
-/// downstream pipeline.
+/// Silently returns `Ok(())` if both parquets are missing or empty —
+/// these states correspond to datasets without pathway annotations (e.g.
+/// gems-sampled) and should not abort the downstream pipeline.
 pub fn write_pathway_discriminability_plots(
     output_dir: &Path,
     progress: &ScanProgress,
 ) -> Result<()> {
-    let parquet_path = output_dir.join("pathway_discriminability.parquet");
-    if !parquet_path.is_file() {
-        return Ok(());
-    }
-    let read_progress = progress.spinner("reading pathway_discriminability.parquet");
-    let rows = read_aggregate_rows(&parquet_path)?;
-    read_progress.finish();
-    if rows.is_empty() {
-        return Ok(());
-    }
-
     ensure_heatmap_font()?;
     let plots_dir = output_dir.join(PLOTS_SUBDIR);
-    fs::create_dir_all(&plots_dir).with_context(|| format!("creating {}", plots_dir.display()))?;
+    let mut produced_any = false;
 
-    let render_progress = progress.spinner("rendering pathway discriminability plots");
-    for metric in [DiscriminabilityMetric::Auroc, DiscriminabilityMetric::Auprc] {
-        let caption = metric.title();
-        let stem = plots_dir.join(metric.file_stem());
-        write_plot_svg(&stem.with_extension("svg"), metric, caption, &rows)?;
-        write_plot_png(&stem.with_extension("png"), metric, caption, &rows)?;
+    let aggregate_path = output_dir.join("pathway_discriminability.parquet");
+    if aggregate_path.is_file() {
+        let read_progress = progress.spinner("reading pathway_discriminability.parquet");
+        let rows = read_aggregate_rows(&aggregate_path)?;
+        read_progress.finish();
+        if !rows.is_empty() {
+            fs::create_dir_all(&plots_dir)
+                .with_context(|| format!("creating {}", plots_dir.display()))?;
+            let render_progress =
+                progress.spinner("rendering aggregate (micro-averaged) discriminability plots");
+            for metric in [DiscriminabilityMetric::Auroc, DiscriminabilityMetric::Auprc] {
+                let caption = format!("{} (micro-averaged)", metric.title());
+                let stem = plots_dir.join(metric.file_stem());
+                write_plot_svg(&stem.with_extension("svg"), metric, &caption, &rows)?;
+                write_plot_png(&stem.with_extension("png"), metric, &caption, &rows)?;
+            }
+            render_progress.finish();
+            produced_any = true;
+        }
     }
-    render_progress.finish();
+
+    let per_class_path = output_dir.join("pathway_discriminability_per_class.parquet");
+    if per_class_path.is_file() {
+        let read_progress = progress.spinner("reading pathway_discriminability_per_class.parquet");
+        let per_class = read_per_class_rows(&per_class_path)?;
+        read_progress.finish();
+        if !per_class.is_empty() {
+            fs::create_dir_all(&plots_dir)
+                .with_context(|| format!("creating {}", plots_dir.display()))?;
+            let per_class_dir = plots_dir.join("per_class");
+            fs::create_dir_all(&per_class_dir)
+                .with_context(|| format!("creating {}", per_class_dir.display()))?;
+            let pathways = group_by_pathway(&per_class);
+            let render_progress = progress.bar(
+                u64::try_from(pathways.len()).unwrap_or(u64::MAX),
+                "rendering per-class discriminability plots",
+            );
+            for (pathway, rows) in pathways {
+                let subdir = per_class_dir.join(sanitize_path_component(&pathway));
+                fs::create_dir_all(&subdir)
+                    .with_context(|| format!("creating {}", subdir.display()))?;
+                for metric in [DiscriminabilityMetric::Auroc, DiscriminabilityMetric::Auprc] {
+                    let caption =
+                        format!("{} — one-vs-rest, pathway = {}", metric.title(), pathway);
+                    let stem = subdir.join(metric.file_stem());
+                    write_plot_svg(&stem.with_extension("svg"), metric, &caption, &rows)?;
+                    write_plot_png(&stem.with_extension("png"), metric, &caption, &rows)?;
+                }
+                render_progress.inc(1);
+            }
+            render_progress.finish();
+            produced_any = true;
+        }
+    }
+
+    let _ = produced_any;
     Ok(())
+}
+
+/// Group per-class rows by pathway, returning an ordered map keyed by
+/// pathway label so per-pathway plot directories appear in stable order.
+fn group_by_pathway(rows: &[PerClassPlotRow]) -> BTreeMap<String, Vec<DiscriminabilityRow>> {
+    let mut grouped: BTreeMap<String, Vec<DiscriminabilityRow>> = BTreeMap::new();
+    for row in rows {
+        grouped
+            .entry(row.pathway.clone())
+            .or_default()
+            .push(DiscriminabilityRow {
+                config: row.config.clone(),
+                peak_count: row.peak_count,
+                auroc: row.auroc,
+                auprc: row.auprc,
+            });
+    }
+    grouped
 }
 
 /// One row of `pathway_discriminability.parquet` reduced to the columns
@@ -95,6 +162,22 @@ struct DiscriminabilityRow {
     /// Area under the ROC curve for the pathway-pair classifier.
     auroc: f64,
     /// Area under the precision-recall curve for the pathway-pair classifier.
+    auprc: f64,
+}
+
+/// One row of `pathway_discriminability_per_class.parquet` reduced to the
+/// columns the renderer cares about. `pathway` is the fixed positive
+/// class for the one-vs-rest classifier.
+struct PerClassPlotRow {
+    /// Similarity-config slug.
+    config: String,
+    /// Number of retained top-intensity peaks for this row.
+    peak_count: u64,
+    /// Positive-class pathway label for this row.
+    pathway: String,
+    /// Area under the ROC curve for the one-vs-rest classifier.
+    auroc: f64,
+    /// Area under the precision-recall curve for the one-vs-rest classifier.
     auprc: f64,
 }
 
@@ -305,6 +388,22 @@ fn read_aggregate_rows(path: &Path) -> Result<Vec<DiscriminabilityRow>> {
     Ok(rows)
 }
 
+/// Read every row of `pathway_discriminability_per_class.parquet` into
+/// memory. The file is at most a few megabytes, so a single pass is fine.
+fn read_per_class_rows(path: &Path) -> Result<Vec<PerClassPlotRow>> {
+    let file = fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .with_context(|| format!("reading metadata from {}", path.display()))?
+        .build()
+        .with_context(|| format!("building reader for {}", path.display()))?;
+    let mut rows = Vec::new();
+    for batch in reader {
+        let batch = batch.with_context(|| format!("decoding batch in {}", path.display()))?;
+        observe_per_class_batch(&batch, &mut rows)?;
+    }
+    Ok(rows)
+}
+
 /// Extract `(config, peak_count, auroc, auprc)` from one record batch.
 /// Rows where either AUROC or AUPRC is null or non-finite are dropped.
 fn observe_aggregate_batch(batch: &RecordBatch, rows: &mut Vec<DiscriminabilityRow>) -> Result<()> {
@@ -324,6 +423,35 @@ fn observe_aggregate_batch(batch: &RecordBatch, rows: &mut Vec<DiscriminabilityR
         rows.push(DiscriminabilityRow {
             config: configs.value(row).to_string(),
             peak_count: peak_counts.value(row),
+            auroc: auroc_value,
+            auprc: auprc_value,
+        });
+    }
+    Ok(())
+}
+
+/// Extract `(config, peak_count, pathway, auroc, auprc)` from one record
+/// batch of the per-class parquet. Rows where either AUROC or AUPRC is
+/// null or non-finite are dropped.
+fn observe_per_class_batch(batch: &RecordBatch, rows: &mut Vec<PerClassPlotRow>) -> Result<()> {
+    let configs = required_column::<StringArray>(batch, "config")?;
+    let peak_counts = required_column::<UInt64Array>(batch, "peak_count")?;
+    let pathways = required_column::<StringArray>(batch, "pathway")?;
+    let auroc = required_column::<Float64Array>(batch, "auroc")?;
+    let auprc = required_column::<Float64Array>(batch, "auprc")?;
+    for row in 0..batch.num_rows() {
+        if auroc.is_null(row) || auprc.is_null(row) {
+            continue;
+        }
+        let auroc_value = auroc.value(row);
+        let auprc_value = auprc.value(row);
+        if !auroc_value.is_finite() || !auprc_value.is_finite() {
+            continue;
+        }
+        rows.push(PerClassPlotRow {
+            config: configs.value(row).to_string(),
+            peak_count: peak_counts.value(row),
+            pathway: pathways.value(row).to_string(),
             auroc: auroc_value,
             auprc: auprc_value,
         });
@@ -438,6 +566,11 @@ where
                     .map_err(plotters_error)?
                     .label(label)
                     .legend(move |(x, y)| {
+                        // Visually approximate the dashed series in the
+                        // legend by stacking two short segments separated
+                        // by a gap; plotters' DashedPathElement does the
+                        // full pattern, but for a 28 px legend swatch a
+                        // pair of solid dashes reads more cleanly.
                         let dash_len = i32::try_from(size).unwrap_or(8).clamp(2, 14);
                         let gap = i32::try_from(spacing).unwrap_or(4).max(2);
                         PathElement::new(
