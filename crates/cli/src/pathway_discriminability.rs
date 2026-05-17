@@ -219,12 +219,18 @@ struct CellRow {
     n_negatives: u64,
 }
 
-/// One row of `pathway_discriminability_summary.parquet`.
+/// One row of `pathway_discriminability_summary.parquet`. Reports the
+/// peak count at which each metric reaches its maximum for the
+/// `(dataset, config)` group together with the maximised value, so
+/// consumers can rank configs by their best operating point rather than
+/// by an average that washes out the structure across the peak grid.
 struct SummaryRow {
     dataset: String,
     config: String,
-    mean_auroc: f64,
-    mean_auprc: f64,
+    best_auroc: f64,
+    best_auroc_peak_count: u64,
+    best_auprc: f64,
+    best_auprc_peak_count: u64,
     n_peak_counts: u64,
 }
 
@@ -449,31 +455,47 @@ fn required_column<'a, ArrayType: 'static>(
         .with_context(|| format!("{name} column has unexpected type"))
 }
 
+/// Running per-config argmax accumulator: `(best_auroc, best_auroc_peak,
+/// best_auprc, best_auprc_peak, n_peak_counts_seen)`. A peak count is
+/// counted toward `n_peak_counts_seen` whenever either AUROC or AUPRC is
+/// finite for it, matching the legacy mean-summary's denominator.
+type ArgmaxAccumulator = (f64, u64, f64, u64, u64);
+
 fn summarize_per_config(cell_rows: &[CellRow]) -> Vec<SummaryRow> {
-    let mut by_config: HashMap<(String, String), (f64, f64, u64)> = HashMap::new();
+    let mut by_config: HashMap<(String, String), ArgmaxAccumulator> = HashMap::new();
     for row in cell_rows {
-        if !row.auroc.is_finite() || !row.auprc.is_finite() {
+        if !row.auroc.is_finite() && !row.auprc.is_finite() {
             continue;
         }
         let entry = by_config
             .entry((row.dataset.clone(), row.config.clone()))
-            .or_default();
-        entry.0 += row.auroc;
-        entry.1 += row.auprc;
-        entry.2 += 1;
+            .or_insert((f64::NEG_INFINITY, 0, f64::NEG_INFINITY, 0, 0));
+        if row.auroc.is_finite() && row.auroc > entry.0 {
+            entry.0 = row.auroc;
+            entry.1 = row.peak_count;
+        }
+        if row.auprc.is_finite() && row.auprc > entry.2 {
+            entry.2 = row.auprc;
+            entry.3 = row.peak_count;
+        }
+        entry.4 += 1;
     }
     let mut summary: Vec<SummaryRow> = by_config
         .into_iter()
-        .map(|((dataset, config), (sum_auroc, sum_auprc, count))| {
-            let count_f = count as f64;
-            SummaryRow {
+        .map(
+            |(
+                (dataset, config),
+                (best_auroc, best_auroc_peak, best_auprc, best_auprc_peak, count),
+            )| SummaryRow {
                 dataset,
                 config,
-                mean_auroc: sum_auroc / count_f,
-                mean_auprc: sum_auprc / count_f,
+                best_auroc,
+                best_auroc_peak_count: best_auroc_peak,
+                best_auprc,
+                best_auprc_peak_count: best_auprc_peak,
                 n_peak_counts: count,
-            }
-        })
+            },
+        )
         .collect();
     summary.sort_by(|a, b| a.dataset.cmp(&b.dataset).then(a.config.cmp(&b.config)));
     summary
@@ -508,8 +530,10 @@ fn summary_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("dataset", DataType::Utf8, false),
         Field::new("config", DataType::Utf8, false),
-        Field::new("mean_auroc", DataType::Float64, false),
-        Field::new("mean_auprc", DataType::Float64, false),
+        Field::new("best_auroc", DataType::Float64, false),
+        Field::new("best_auroc_peak_count", DataType::UInt64, false),
+        Field::new("best_auprc", DataType::Float64, false),
+        Field::new("best_auprc_peak_count", DataType::UInt64, false),
         Field::new("n_peak_counts", DataType::UInt64, false),
     ]))
 }
@@ -620,8 +644,10 @@ fn write_summary_rows(output_dir: &Path, rows: &[SummaryRow]) -> Result<()> {
     }
     let datasets: StringArray = rows.iter().map(|r| Some(r.dataset.as_str())).collect();
     let configs: StringArray = rows.iter().map(|r| Some(r.config.as_str())).collect();
-    let mean_auroc: Float64Array = rows.iter().map(|r| Some(r.mean_auroc)).collect();
-    let mean_auprc: Float64Array = rows.iter().map(|r| Some(r.mean_auprc)).collect();
+    let best_auroc: Float64Array = rows.iter().map(|r| Some(r.best_auroc)).collect();
+    let best_auroc_peak: UInt64Array = rows.iter().map(|r| r.best_auroc_peak_count).collect();
+    let best_auprc: Float64Array = rows.iter().map(|r| Some(r.best_auprc)).collect();
+    let best_auprc_peak: UInt64Array = rows.iter().map(|r| r.best_auprc_peak_count).collect();
     let n_peaks: UInt64Array = rows.iter().map(|r| r.n_peak_counts).collect();
     let schema = summary_schema();
     let batch = RecordBatch::try_new(
@@ -629,8 +655,10 @@ fn write_summary_rows(output_dir: &Path, rows: &[SummaryRow]) -> Result<()> {
         vec![
             Arc::new(datasets),
             Arc::new(configs),
-            Arc::new(mean_auroc),
-            Arc::new(mean_auprc),
+            Arc::new(best_auroc),
+            Arc::new(best_auroc_peak),
+            Arc::new(best_auprc),
+            Arc::new(best_auprc_peak),
             Arc::new(n_peaks),
         ],
     )
