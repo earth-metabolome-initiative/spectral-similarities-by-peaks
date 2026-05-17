@@ -1,7 +1,7 @@
 //! Command execution for the experiment binary.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -64,6 +64,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::RenderPathwayDiscriminability(args) => run_render_pathway_discriminability(&args),
         Commands::ComputeConfigDiversity(args) => run_compute_config_diversity(&args),
         Commands::ReEncodeParquets(args) => run_re_encode_parquets(&args),
+        Commands::VerifyParquetCodecs(args) => run_verify_parquet_codecs(&args),
     }
 }
 
@@ -221,6 +222,95 @@ fn re_encode_parquet(path: &Path) -> Result<()> {
     fs::rename(&temp, path)
         .with_context(|| format!("replacing {} with re-encoded copy", path.display()))?;
     Ok(())
+}
+
+/// Walk every `.parquet` under `args.output_dir`, read each file's
+/// parquet metadata, print the compression codec declared on the first
+/// column chunk of the first row group, and end with a per-codec summary
+/// (number of files and total on-disk bytes).
+///
+/// Used to confirm that a previous `re-encode-parquets` pass actually
+/// rewrote every file with the crate's default zstd codec — a mixed
+/// result (some `ZSTD`, some `SNAPPY`) means the prior pass was
+/// interrupted.
+fn run_verify_parquet_codecs(args: &crate::cli::VerifyParquetCodecsArgs) -> Result<()> {
+    let root = &args.output_dir;
+    if !root.is_dir() {
+        anyhow::bail!("{} is not a directory", root.display());
+    }
+    let paths = collect_parquets(root)?;
+    if paths.is_empty() {
+        println!("no `.parquet` files under {}", root.display());
+        return Ok(());
+    }
+
+    let mut by_codec_count: BTreeMap<String, u64> = BTreeMap::new();
+    let mut by_codec_bytes: BTreeMap<String, u64> = BTreeMap::new();
+    let mut errors: Vec<(PathBuf, String)> = Vec::new();
+    for path in &paths {
+        let size = fs::metadata(path)
+            .with_context(|| format!("stating {}", path.display()))?
+            .len();
+        let (codec, detail) = match parquet_codec_of(path) {
+            Ok(name) => (name, None),
+            Err(err) => {
+                errors.push((path.clone(), format!("{err:#}")));
+                ("ERROR".to_string(), Some(format!("{err:#}")))
+            }
+        };
+        *by_codec_count.entry(codec.clone()).or_default() += 1;
+        *by_codec_bytes.entry(codec.clone()).or_default() += size;
+        if !args.quiet {
+            let rel = path.strip_prefix(root).unwrap_or(path);
+            match detail {
+                Some(message) => {
+                    println!("{codec:<14} {size:>12}  {}  -- {message}", rel.display());
+                }
+                None => println!("{codec:<14} {size:>12}  {}", rel.display()),
+            }
+        }
+    }
+
+    println!();
+    println!(
+        "Summary over {} parquet files under {}:",
+        paths.len(),
+        root.display()
+    );
+    println!("  {:<14} {:>8} {:>10}", "codec", "files", "GiB");
+    for (codec, count) in &by_codec_count {
+        // 1 GiB at petabyte scale fits well within f64 mantissa; the
+        // precision loss is well below display resolution.
+        #[allow(clippy::cast_precision_loss)]
+        let gib = (by_codec_bytes[codec] as f64) / 1_073_741_824.0;
+        println!("  {codec:<14} {count:>8} {gib:>10.2}");
+    }
+    if !errors.is_empty() {
+        println!();
+        println!("{} parquet files could not be read:", errors.len());
+        for (path, message) in &errors {
+            let rel = path.strip_prefix(root).unwrap_or(path);
+            println!("  {}: {message}", rel.display());
+        }
+    }
+    Ok(())
+}
+
+/// Open `path`'s parquet metadata and return the compression codec
+/// declared on the first column chunk of the first row group.
+/// In this codebase every column chunk of a given file uses the same
+/// codec (every writer is configured once at file open via
+/// `parquet_writer_props`), so the first chunk is representative.
+fn parquet_codec_of(path: &Path) -> Result<String> {
+    let file = fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .with_context(|| format!("reading metadata from {}", path.display()))?;
+    let metadata = reader.metadata();
+    if metadata.num_row_groups() == 0 {
+        return Ok("EMPTY".into());
+    }
+    let codec = metadata.row_group(0).column(0).compression();
+    Ok(format!("{codec:?}"))
 }
 
 /// Read dense grid matrices from an existing `distribution_grid.npz` artifact.
@@ -1587,7 +1677,8 @@ mod tests {
             | Commands::ComputePathwayDiscriminability(_)
             | Commands::RenderPathwayDiscriminability(_)
             | Commands::ComputeConfigDiversity(_)
-            | Commands::ReEncodeParquets(_) => {
+            | Commands::ReEncodeParquets(_)
+            | Commands::VerifyParquetCodecs(_) => {
                 anyhow::bail!("expected scan command")
             }
         }
@@ -1627,7 +1718,8 @@ mod tests {
             | Commands::ComputePathwayDiscriminability(_)
             | Commands::RenderPathwayDiscriminability(_)
             | Commands::ComputeConfigDiversity(_)
-            | Commands::ReEncodeParquets(_) => {
+            | Commands::ReEncodeParquets(_)
+            | Commands::VerifyParquetCodecs(_) => {
                 anyhow::bail!("expected scan-shard command")
             }
         }
@@ -1674,7 +1766,8 @@ mod tests {
             | Commands::ComputePathwayDiscriminability(_)
             | Commands::RenderPathwayDiscriminability(_)
             | Commands::ComputeConfigDiversity(_)
-            | Commands::ReEncodeParquets(_) => {
+            | Commands::ReEncodeParquets(_)
+            | Commands::VerifyParquetCodecs(_) => {
                 anyhow::bail!("expected scan-shard command")
             }
         }
