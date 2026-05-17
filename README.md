@@ -16,8 +16,6 @@ The first executable slice is a Rust CLI that:
 - writes raw neighbor scores, per-cutoff histograms, adjacent peak-count comparisons, and full pairwise peak-count comparison grids.
 - optionally scores NPC pathways by summing the selected spectrum similarity to a fixed number of pathway representatives.
 
-Experiment runs:
-
 Default similarity parametrization:
 
 | CLI config | Metric | m/z exponent | Intensity exponent | Entropy weighting |
@@ -41,104 +39,15 @@ Default similarity parametrization:
 | `entropy:0.0:1.0:false` | Unweighted entropy | `0.0` | `1.0` | `false` |
 | `modified-entropy:0.0:1.0:false` | Modified unweighted entropy | `0.0` | `1.0` | `false` |
 
-Harmonized full run with pathway representative scoring:
+A full scan covers `18 configurations x 128 retained-peak-counts = 2304` cells per dataset, with score-distribution comparisons by empirical quantiles, fixed-bin histograms, two-sample KS statistic, asymptotic KS p-value, and 1D Wasserstein distance.
 
-```bash
-RUSTFLAGS="-C target-cpu=native" cargo run --release -- scan \
-  --dataset harmonized \
-  --neighbors 64 \
-  --mz-tolerance 0.05 \
-  --pathway-representatives-per-class 5 \
-  --output-dir results/harmonized-full
-```
-
-GeMS-A10 sampled run across all parts:
-
-```bash
-RUSTFLAGS="-C target-cpu=native" cargo run --release -- scan \
-  --dataset gems \
-  --row-sample-size 100000 \
-  --reference-sample-size 1000000 \
-  --neighbors 64 \
-  --mz-tolerance 0.05 \
-  --output-dir results/gems-sampled
-```
-
-Lawrencium run:
-
-```bash
-bash slurm/lrc/setup_env.sh
-bash slurm/lrc/prefetch.sh harmonized
-bash slurm/lrc/submit.sh harmonized
-bash slurm/lrc/status.sh harmonized 60
-bash slurm/lrc/finalize.sh harmonized
-bash slurm/lrc/compute_pathway_discriminability.sh harmonized
-bash slurm/lrc/cancel.sh harmonized
-```
-
-```bash
-bash slurm/lrc/setup_env.sh
-bash slurm/lrc/prefetch.sh gems
-bash slurm/lrc/submit.sh gems
-bash slurm/lrc/status.sh gems 60
-bash slurm/lrc/finalize.sh gems
-bash slurm/lrc/cancel.sh gems
-```
-
-The Lawrencium workflow first prefetches the dataset cache, then submits `18 x 128 = 2304` restartable shard jobs. Each shard computes one `(similarity_config, retained_peak_count)` checkpoint under `distributions/<config>/top_<k>.bincode.zst`. Once the shard grid is complete, `finalize.sh` submits an 18-task array (one shard per similarity config, each running `finalize-shard` and writing to `_finalize_shards/<config>/`) followed by a single dependent merge job (`finalize-merge`) that concatenates the per-config outputs into the canonical top-level Parquet, NumPy, heatmap, and pathway artifacts.
-
-For the AUROC / AUPRC pathway-classification metrics, `slurm/lrc/compute_pathway_discriminability.sh` submits a single job that streams `pathway_shards/<config>/top_<k>/pathway_scores.parquet` and emits `pathway_discriminability.parquet` plus `pathway_discriminability_summary.parquet`. The streaming reader processes one shard at a time so it runs comfortably on a single node even when the merged `pathway_scores.parquet` would be too large. The output is a few MB, so pulling just those two parquets back from the cluster afterwards avoids transferring the underlying hundreds of GB of pairwise scores.
-
-All parquet artifacts produced by this binary are written with the parquet `zstd` codec by default (level 11, configured once in `crates/cli/src/output.rs::parquet_writer_props`). The dense `distribution_grid.npz` / `pathway_prediction_distribution_grid.npz` files are written with `NpzWriter::new_compressed`. Readers don't need to opt in. Both parquet and `numpy.savez_compressed` consumers handle the deflated streams transparently. For artifacts that pre-date this change (e.g., the harmonized-full directory currently on Lawrencium), the `slurm/lrc/compress_parquets.sh harmonized` job runs the `re-encode-parquets` CLI subcommand, which walks every `.parquet` under the given directory and rewrites it in place using the new codec. The result stays a valid parquet (random columnar access preserved). A 10-shard sample showed an 85.8 % size reduction relative to the legacy Snappy encoding, so the subsequent rsync / Globus pull from the cluster shrinks by roughly 7x.
-
-Use `bash slurm/lrc/cancel.sh all --include-legacy` to cancel all spectral jobs, including old generic `spectral-shard` arrays, and remove interrupted temporary checkpoint files.
-
-Full local smoke test:
-
-```bash
-cargo test --test full_smoke
-```
-
-This runs a deterministic end-to-end synthetic scan by parsing the CLI in-process and dispatching the crate directly. It checks the generated Parquet, NumPy, SVG, and PNG artifacts plus CLI help output. The synthetic scan avoids dataset downloads while still exercising spectrum preparation, direct and modified cosine and entropy scoring, fixed reference sampling, top-k neighbor collection, distribution summaries, histograms, full comparison grids, heatmap rendering, and pathway scoring.
-
-Outputs:
-
-- `distribution_summary.parquet`: mean, standard deviation, and quantiles for each score distribution.
-- `distribution_histograms.parquet`: fixed-width histogram bins over the `[0, 1]` score range for every distribution.
-- `distribution_tests.parquet`: adjacent peak-count comparisons using two-sample KS statistic, asymptotic KS p-value, and 1D Wasserstein distance.
-- `distribution_grid.parquet`: the full pairwise peak-count comparison grid as a long table.
-- `distribution_grid.npz`: dense NumPy matrices shaped as `similarity_config x peak_count_a x peak_count_b` for heatmap visualization.
-- `distribution_grid_configs.parquet`: config-axis metadata for `distribution_grid.npz`.
-- `distributions/<config>/top_<k>.bincode.zst`: zstd-compressed serde checkpoints for sorted score distributions, reused automatically when a run is restarted with matching score-affecting arguments. Older uncompressed `.bincode` checkpoints are migrated when reused.
-- `pathway_shards/<config>/top_<k>/`: per-shard pathway score and prediction Parquet files emitted by `scan-shard` and merged by `finalize-scan`.
-- `heatmaps/<config>/*.svg` and `heatmaps/<config>/*.png`: static heatmaps for mean delta, KS statistic, asymptotic KS p-value, and 1D Wasserstein distance.
-- `pathway_scores.parquet`: optional similarity-sum scores from each query to each NPC pathway representative group, emitted when `--pathway-representatives-per-class` is greater than zero.
-- `pathway_predictions.parquet`: optional best-pathway predictions from the representative similarity sums.
-- `pathway_prediction_metrics.parquet`: per-pathway one-vs-rest accuracy and MCC at every peak count, plus support-weighted averages.
-- `pathway_prediction_distribution_grid.parquet`: full pairwise peak-count comparison grid for categorical prediction distributions.
-- `pathway_prediction_distribution_grid.npz`: dense NumPy matrices for total variation, Jensen-Shannon distance, and Hellinger distance between prediction distributions.
-- `pathway_prediction_heatmaps/<config>/*.svg` and `pathway_prediction_heatmaps/<config>/*.png`: static heatmaps for categorical prediction-distribution drift.
-- `pathway_prediction_plots/<config>/*.svg` and `pathway_prediction_plots/<config>/*.png`: accuracy and MCC line plots by retained peak count, with one line per pathway and one support-weighted average line.
-- `pathway_discriminability.parquet`: per-`(dataset, config, peak_count)` AUROC and AUPRC for the binary pathway-pair classifier (candidate pathway matches query pathway), plus `n_positives` and `n_negatives`.
-- `pathway_discriminability_summary.parquet`: per-`(dataset, config)` mean AUROC / mean AUPRC across the peak-count grid.
-- `pathway_discriminability_plots/auroc.{svg,png}` and `pathway_discriminability_plots/auprc.{svg,png}`: AUROC and AUPRC line plots by retained peak count with one line per similarity config. Colour encodes the metric family and dash pattern encodes the m/z exponent.
-
-The peak-count grid is always `1..=128`, so `distribution_grid.npz` contains full `128 x 128` matrices. `--row-sample-size` samples query rows, while `--reference-sample-size` samples the fixed reference columns used by nearest-neighbor search. The selected query and reference ids are reused across every peak count, so distribution changes are attributable to peak retention rather than changing samples.
-
-The current distribution comparisons avoid assuming a parametric score family. The nonparametric outputs include empirical quantiles, fixed-bin histograms, two-sample KS statistic, asymptotic KS p-value, and 1D Wasserstein distance.
-
-Existing `pathway_predictions.parquet` outputs can be reprocessed with `render-pathway-artifacts`:
-
-```bash
-target/release/spectral-similarities-by-peaks render-pathway-artifacts \
-  --output-dir results/harmonized-full
-```
+The end-to-end scan takes ~70k compute hours on LBL's Lawrencium cluster. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the SLURM orchestration, the local-dev workflow, the smoke test, the parquet-compression pipeline, and the full output-artifact reference.
 
 ## Pathway-classification results
 
 Each `(config, peak_count)` cell of `pathway_scores.parquet` defines a binary classifier: the positive class is "candidate NPC pathway equals the query NPC pathway", and the similarity score itself ranks pairs. AUROC and AUPRC of that ranking measure how well the metric concentrates within-pathway similarity above cross-pathway similarity, independent of any chosen significance threshold. The first two tables report each config's **best** micro-averaged AUROC and AUPRC across the `1..=128` peak grid on the harmonized dataset, with the peak count at which each maximum is reached. Numbers come from `pathway_discriminability_summary.parquet` (`best_auroc`, `best_auroc_peak_count`, `best_auprc`, `best_auprc_peak_count`). Pooled over all `(query, candidate)` pairs the signal is weak. Every config lands within 0.45 to 0.54 AUROC, and the best operating point lives in the 13 to 16 retained-peak range for the top performers.
 
-#### Best per config: AUROC (micro-averaged)
+### Best per config: AUROC (micro-averaged)
 
 | Family | m/z | Intensity | Weighted | Best AUROC | Top-k @ best AUROC |
 | --- | ---: | ---: | :---: | ---: | ---: |
@@ -161,7 +70,7 @@ Each `(config, peak_count)` cell of `pathway_scores.parquet` defines a binary cl
 | cosine | 1.0 | 1.00 | - | 0.5234 | 14 |
 | cosine | 0.0 | 1.00 | - | 0.5225 | 14 |
 
-#### Best per config: AUPRC (micro-averaged)
+### Best per config: AUPRC (micro-averaged)
 
 | Family | m/z | Intensity | Weighted | Best AUPRC | Top-k @ best AUPRC |
 | --- | ---: | ---: | :---: | ---: | ---: |
@@ -186,7 +95,7 @@ Each `(config, peak_count)` cell of `pathway_scores.parquet` defines a binary cl
 
 The micro-averaged view hides a much stronger per-pathway signal. Splitting the classifier into one-vs-rest classifiers per base NPC pathway (rows of `pathway_discriminability_per_class.parquet` with the corresponding query pathway as the fixed positive class) shows that each pathway has a different optimal `(config, peak_count)`, and that the per-pathway AUROC ranges all the way up to 0.68. The remaining 18 multi-pathway labels (e.g. `Alkaloids|Polyketides`) leave zero positives once the candidate pathway must match exactly and so produce NaN one-vs-rest AUROC, so they are omitted.
 
-#### Per-pathway best config: AUROC (one-vs-rest)
+### Per-pathway best config: AUROC (one-vs-rest)
 
 | Pathway | Family | m/z | Intensity | Weighted | Best AUROC | Top-k @ best AUROC |
 | --- | --- | ---: | ---: | :---: | ---: | ---: |
@@ -198,7 +107,7 @@ The micro-averaged view hides a much stronger per-pathway signal. Splitting the 
 | Alkaloids | modified-cosine | 0.0 | 0.25 | - | 0.5311 | 1 |
 | Fatty acids | modified-cosine | 3.0 | 0.60 | - | 0.5205 | 2 |
 
-#### Per-pathway best config: AUPRC (one-vs-rest)
+### Per-pathway best config: AUPRC (one-vs-rest)
 
 | Pathway | Family | m/z | Intensity | Weighted | Best AUPRC | Top-k @ best AUPRC |
 | --- | --- | ---: | ---: | :---: | ---: | ---: |
@@ -216,77 +125,30 @@ The optimal `(family, m/z, intensity)` rotates almost completely across pathways
 
 The entropy and modified-entropy families never win any of the seven base NPC pathways. Entropy with weighted peaks holds rank 3 in the aggregate AUROC table, which places the family mid-pack in the pooled view, but the per-class winner is a cosine variant in every pathway.
 
-Intensity exponent 1.0 is the worst single choice. The four cosine and modified-cosine variants at intensity 1.0 hold ranks 15 to 18 in both the gems-sampled and harmonized-full diversity tables, and they occupy the bottom four rows of both the aggregate AUROC and aggregate AUPRC tables. With intensity 1.0 the one or two brightest peaks already carry most of the score, so retaining more peaks does not change the distribution.
+Intensity exponent 1.0 is the worst single choice. The four cosine and modified-cosine variants at intensity 1.0 hold ranks 15 to 18 in both the GeMS-sampled and harmonized-full diversity tables, and they occupy the bottom four rows of both the aggregate AUROC and aggregate AUPRC tables. With intensity 1.0 the one or two brightest peaks already carry most of the score, so retaining more peaks does not change the distribution.
 
 Six modified-variant configurations (five modified-cosine entries and one modified-entropy with weighted=false) reach their best AUROC of 0.5240 at top-1 and stay below that value at every larger peak count. All six share the same 0.5240 AUROC and 0.1447 AUPRC at top-1, which is the trivial single-peak case. Above top-1 these configurations carry no peak-count-dependent signal.
 
-Per-config curves of the aggregate AUROC and AUPRC by retained peak count are written to `pathway_discriminability_plots/auroc.{svg,png}` and `pathway_discriminability_plots/auprc.{svg,png}` (one line per config, colour by metric family, dash pattern by m/z exponent). The plots themselves are regenerated from the same parquets with:
-
-```bash
-target/release/spectral-similarities-by-peaks render-pathway-discriminability \
-  --output-dir results/harmonized-full
-```
+Per-config curves of the aggregate AUROC and AUPRC by retained peak count are written to `pathway_discriminability_plots/auroc.{svg,png}` and `pathway_discriminability_plots/auprc.{svg,png}` (one line per config, colour by metric family, dash pattern by m/z exponent). The same numbers power the interactive Pathways tab of the web viewer.
 
 ## Web viewer
 
-The repo also ships a small Dioxus + WebAssembly viewer that renders any of
-the 8 heatmaps per config on demand in the browser. It fetches a dataset's
-`distribution_grid.npz` (~9 MB) and re-uses the same `plotters` pipeline as
-the CLI compiled to WASM, so changing the dataset, similarity config,
-metric, or α threshold redraws an SVG client-side without any server.
+The repo also ships a small Dioxus + WebAssembly viewer with two tabs. The Heatmaps tab renders the 8 metric heatmaps per config on demand in the browser, fetching a dataset's `distribution_grid.npz` (~9 MB) and re-using the same `plotters` pipeline as the CLI compiled to WASM. The Pathways tab renders AUROC / AUPRC / accuracy / MCC line plots from `pathway_discriminability_lines.json`, with filters for similarity family, m/z exponent, intensity exponent, and entropy weighting.
 
-The live build is deployed to GitHub Pages at
-[earth-metabolome-initiative.github.io/spectral-similarities-by-peaks](https://earth-metabolome-initiative.github.io/spectral-similarities-by-peaks/).
-
-To run it locally:
-
-```bash
-cargo install dioxus-cli --version 0.7.9 --locked  # one-off
-rustup target add wasm32-unknown-unknown            # one-off
-cd crates/web
-dx serve --profile wasm-release --platform web
-# open http://localhost:8080/spectral-similarities-by-peaks/
-```
-
-The `wasm-release` profile (defined in the workspace `Cargo.toml`) strips
-DWARF debug info before `wasm-opt` runs, sidestepping the `compile unit
-size was incorrect` SIGABRT seen with recent rustc + older binaryen
-builds.
-
-Committed viewer payload lives under `crates/web/public/data/`:
-
-- `manifest.json`: list of available datasets.
-- `<slug>/distribution_grid.npz`: the dense `(configs, 128, 128)` arrays
-  used at runtime.
-- `<slug>/distribution_grid_configs.json`: config-axis labels (converted
-  once from `distribution_grid_configs.parquet`).
-
-To refresh the viewer with a new dataset, drop the npz into a new slug
-directory and regenerate the JSON labels from the parquet (any one-off
-pyarrow / arrow-rs snippet works).
+The live build is deployed to GitHub Pages at [earth-metabolome-initiative.github.io/spectral-similarities-by-peaks](https://earth-metabolome-initiative.github.io/spectral-similarities-by-peaks/). For local-dev instructions (`dx serve`, the `wasm-release` profile, and the data-payload layout under `crates/web/public/data/`) see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Per-config diversity ranking
 
-The `compute-config-diversity` subcommand reduces a finished scan's
-`distribution_grid.npz` to a single number per similarity configuration: the
-mean of the Kolmogorov-Smirnov statistic (`D`) across every off-diagonal cell
-of the 128 by 128 grid. Larger mean `D` means the score distributions shift
-more across peak counts.
+The `compute-config-diversity` subcommand reduces a finished scan's `distribution_grid.npz` to a single number per similarity configuration: the mean of the Kolmogorov-Smirnov statistic (`D`) across every off-diagonal cell of the 128 by 128 grid. Larger mean `D` means the score distributions shift more across peak counts.
 
 ```bash
 target/release/spectral-similarities-by-peaks compute-config-diversity \
   --output-dir results/harmonized-full
 ```
 
-The table also reports the peak count at which each KS-statistic contour
-(`D = 0.10`, `0.05`, `0.01`) reaches its right-edge asymptote, i.e., the
-smallest retained-peak count above which the similarity-score CDF differs
-from the full-peak CDF by less than that threshold. `D = 0.10` is the
-data-drift literature's "small/moderate" boundary, `D = 0.05` the
-"negligible/small" boundary, and `D = 0.01` a tighter reference for
-near-identical distributions.
+The table also reports the peak count at which each KS-statistic contour (`D = 0.10`, `0.05`, `0.01`) reaches its right-edge asymptote, i.e., the smallest retained-peak count above which the similarity-score CDF differs from the full-peak CDF by less than that threshold. `D = 0.10` is the data-drift literature's "small/moderate" boundary, `D = 0.05` the "negligible/small" boundary, and `D = 0.01` a tighter reference for near-identical distributions.
 
-### gems-sampled
+### GeMS-sampled
 
 This dataset uses a 100 000-query sample searched against a 1 000 000-reference sample, both drawn from the full ~22 M-spectrum GeMS-A10 corpus (`ROW_SAMPLE_SIZE=100000`, `REFERENCE_SAMPLE_SIZE=1000000` in `slurm/lrc/submit.sh`). With 64 nearest neighbors per query that yields ~6.4 M similarity-score samples per `(config, peak_count)` cell (verified against `distribution_summary.parquet`: min 6 282 680, max 6 400 000, mean 6 399 398). Mean off-diagonal `D` ranges from 0.021 to 0.113.
 
@@ -315,7 +177,7 @@ The intensity exponent drives most of the ranking. The four `intensity^0.25` con
 
 ### harmonized-full
 
-This is the harmonized annotated MS2 dataset with no query sampling, no reference sampling, and full top-128 truncation. All 443 905 query spectra are searched against the same pool with 64 neighbors per query, yielding ~28.4 M similarity-score samples per `(config, peak_count)` cell (verified against `distribution_summary.parquet`: min 26 847 500, max 28 409 829, mean 28 395 138, about 4.4x the gems-sampled per-cell count). The larger sample yields smoother per-peak-count CDFs, and `mean D` drops to the 0.020-0.063 range.
+This is the harmonized annotated MS2 dataset with no query sampling, no reference sampling, and full top-128 truncation. All 443 905 query spectra are searched against the same pool with 64 neighbors per query, yielding ~28.4 M similarity-score samples per `(config, peak_count)` cell (verified against `distribution_summary.parquet`: min 26 847 500, max 28 409 829, mean 28 395 138, about 4.4x the GeMS-sampled per-cell count). The larger sample yields smoother per-peak-count CDFs, and `mean D` drops to the 0.020-0.063 range.
 
 | Rank | Family | m/z | Intensity | Weighted | mean D | stddev D | D = 0.10 peak | D = 0.05 peak | D = 0.01 peak |
 | ---: | --- | ---: | ---: | :---: | ---: | ---: | ---: | ---: | ---: |
@@ -338,14 +200,22 @@ This is the harmonized annotated MS2 dataset with no query sampling, no referenc
 | 17 | modified-cosine | 0.0 | 1.00 | - | 0.02036 | 0.10394 | 3 | 4 | 7 |
 | 18 | modified-cosine | 1.0 | 1.00 | - | 0.01983 | 0.09916 | 3 | 4 | 7 |
 
-The ordering is broadly preserved: `intensity^0.25` still leads (ranks 1-4) and `intensity^1.0` still trails (ranks 15-18), so the intensity-exponent effect is a property of the metric rather than a sampling artifact. Two differences from gems-sampled stand out. First, the top-rank `mean D` is about 44 % lower (0.063 vs 0.113 at rank 1). The gap narrows down the ranking, with the bottom-rank configs almost unchanged at 0.020 vs 0.021. With about 4.4x more score samples per cell the empirical CDFs are smoother, adjacent peak counts produce more similar distributions, and the largest pairwise D values shrink the most. Second, the `D = 0.05 peak` column is mostly single-digit: 14 of 18 configs reach the negligible/small boundary at peak count ≤ 9, and the maximum is 16 (for `cosine_mz1.000_int0.250`), well below the gems top-4 range of 23-47. On harmonized data, retaining more than 16 top peaks does not change the small-effect threshold for any config. The `D = 0.01` column is a different story: the strict boundary still requires 20-60 peaks for most configs, so the full 128 peaks are not wasted if strict equivalence matters. Modified-cosine and `intensity^1.0` configs reach the `D = 0.05` plateau at 4-5 peaks.
+The ordering is broadly preserved: `intensity^0.25` still leads (ranks 1-4) and `intensity^1.0` still trails (ranks 15-18), so the intensity-exponent effect is a property of the metric rather than a sampling artifact. Two differences from GeMS-sampled stand out. First, the top-rank `mean D` is about 44 % lower (0.063 vs 0.113 at rank 1). The gap narrows down the ranking, with the bottom-rank configs almost unchanged at 0.020 vs 0.021. With about 4.4x more score samples per cell the empirical CDFs are smoother, adjacent peak counts produce more similar distributions, and the largest pairwise D values shrink the most. Second, the `D = 0.05 peak` column is mostly single-digit: 14 of 18 configs reach the negligible/small boundary at peak count ≤ 9, and the maximum is 16 (for `cosine_mz1.000_int0.250`), well below the GeMS-sampled top-4 range of 23-47. On harmonized data, retaining more than 16 top peaks does not change the small-effect threshold for any config. The `D = 0.01` column is a different story: the strict boundary still requires 20-60 peaks for most configs, so the full 128 peaks are not wasted if strict equivalence matters. Modified-cosine and `intensity^1.0` configs reach the `D = 0.05` plateau at 4-5 peaks.
 
 ### Direct-vs-modified convergence asymmetry (partial pattern)
 
-Some modified variants reach the loose thresholds `D = 0.10` and `D = 0.05` at fewer retained peaks than their direct counterparts, but reach the strict `D = 0.01` boundary at more retained peaks. The clearest examples are in gems-sampled: `cosine_mz0.000_int0.500` (17 / 30 / 59) vs `modified_cosine_mz0.000_int0.500` (8 / 13 / 96), and `entropy_mz0.000_int1.000_weightedtrue` (14 / 29 / 59) vs `modified_entropy_mz0.000_int1.000_weightedtrue` (9 / 13 / 87). Across the nine direct/modified pairs, the `D = 0.01` peak is larger for the modified variant in 6 of 9 pairs in gems-sampled and 3 of 9 in harmonized-full, with the positive cases concentrated on the `mz = 0` rows. The asymmetry is therefore selective: it appears mostly at `mz = 0` and disappears or reverses at `mz = 1` and `mz = 3`. One mechanism consistent with the positive cases is that modified variants admit a second matching channel via peaks shifted by the precursor mass difference. Once the precursor shift is fixed, a few well-placed peaks unlock most of that channel's discriminative power, so the score distribution moves quickly per added peak at low retained counts. The shifted matches continue to find marginally correlated peaks at higher counts, so the distribution stabilizes only at large peak counts and the `D = 0.01` boundary is reached late. With `mz ≠ 0` the m/z weighting damps the contribution of shifted peaks at unusual masses and suppresses this long tail. For practical use: if a small-effect peak-count plateau suffices, both variants stabilize at low peak counts. If strict score reproducibility is required and m/z weighting is off, the direct variants reach it sooner.
+Some modified variants reach the loose thresholds `D = 0.10` and `D = 0.05` at fewer retained peaks than their direct counterparts, but reach the strict `D = 0.01` boundary at more retained peaks. The clearest examples are in GeMS-sampled: `cosine_mz0.000_int0.500` (17 / 30 / 59) vs `modified_cosine_mz0.000_int0.500` (8 / 13 / 96), and `entropy_mz0.000_int1.000_weightedtrue` (14 / 29 / 59) vs `modified_entropy_mz0.000_int1.000_weightedtrue` (9 / 13 / 87). Across the nine direct/modified pairs, the `D = 0.01` peak is larger for the modified variant in 6 of 9 pairs in GeMS-sampled and 3 of 9 in harmonized-full, with the positive cases concentrated on the `mz = 0` rows. The asymmetry is therefore selective: it appears mostly at `mz = 0` and disappears or reverses at `mz = 1` and `mz = 3`. One mechanism consistent with the positive cases is that modified variants admit a second matching channel via peaks shifted by the precursor mass difference. Once the precursor shift is fixed, a few well-placed peaks unlock most of that channel's discriminative power, so the score distribution moves quickly per added peak at low retained counts. The shifted matches continue to find marginally correlated peaks at higher counts, so the distribution stabilizes only at large peak counts and the `D = 0.01` boundary is reached late. With `mz ≠ 0` the m/z weighting damps the contribution of shifted peaks at unusual masses and suppresses this long tail. For practical use: if a small-effect peak-count plateau suffices, both variants stabilize at low peak counts. If strict score reproducibility is required and m/z weighting is off, the direct variants reach it sooner.
 
 ### What this means in practice
 
 Higher `mean D` does not mean "better metric". It means the metric responds to more of the spectrum. For downstream tasks that can exploit fine-grained differences across peaks (such as distinguishing structurally similar molecules), a high-diversity config like `cosine_mz1.000_int0.250` carries more signal. For a metric that converges at low peak counts and is robust to spectrum truncation, the low-diversity configs (`modified_cosine_*_int1.000`) plateau at single-digit peak counts and are cheaper to compute. The rankings agree between the two datasets, so the qualitative choice generalizes. Only the absolute magnitudes shift with sample size.
 
-As a rule of thumb across both datasets, retaining the top 50 peaks holds the score distribution within the negligible-drift threshold (D ≤ 0.05) for every config tested. Reaching the strict-equivalence threshold (D ≤ 0.01) requires up to 96 peaks on harmonized and up to 103 on gems (a single config), so retaining the full top-128 is the conservative default when exact score distributions need to be reproduced.
+As a rule of thumb across both datasets, retaining the top 50 peaks holds the score distribution within the negligible-drift threshold (D ≤ 0.05) for every config tested. Reaching the strict-equivalence threshold (D ≤ 0.01) requires up to 96 peaks on harmonized and up to 103 on GeMS-sampled (a single config), so retaining the full top-128 is the conservative default when exact score distributions need to be reproduced.
+
+## Future work
+
+The scan grid covers a deliberate slice of the parametrization space. The axes below are the most natural extensions, ordered roughly by how cheaply they slot into the existing pipeline. Contributions wired up through `I want to collab!` are welcome on any of them.
+
+- `m/z` exponents below 1 and, more generally, below 0. The current grid uses `mz ∈ {0, 1, 3}`, which spans "no m/z weighting" to "high-mass peaks dominate". Fractional exponents in `(0, 1)` and negative exponents that up-weight low-mass peaks have not been measured and may behave differently on small-molecule vs lipid datasets.
+- Intensity exponents above 1.0, below 0.25, and below 0. The current grid uses `{0.25, 0.5, 0.6, 1.0}`, which already shows a clear monotonic effect on diversity. Pushing toward `0.0` (binary presence), above `1.0` (intensity-dominated), or below `0.0` (up-weighting low-intensity peaks) would close the curve at both ends and probe a regime with no published precedent we are aware of.
+- Mechanistic explanation of the pathway-metric affinities. The per-pathway AUROC tables show that certain metrics and peak-retention regimes consistently align with certain pathways. We suspect both biological causes (fragment patterns characteristic of a chemotype, neutral-loss signatures shared within a biosynthetic class) and technical causes (instrument-dependent fragmentation behaviour, collision-energy regimes, mass accuracy at the relevant m/z range) drive these affinities. Working out which effect dominates for which pathway is a follow-up we hope to flesh out with collaborators who carry the relevant analytical-chemistry expertise.
