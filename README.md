@@ -7,14 +7,6 @@
 
 Experiment on measuring when MS2 spectral similarity distributions stop changing as fewer or more fragment peaks are retained.
 
-> [!NOTE]
-> Results are still being processed. The numbers and tables shown in this
-> README are preliminary. The pathway-classification AUROC / AUPRC numbers
-> in [Pathway-classification results](#pathway-classification-results) are
-> available for the harmonized dataset only; the gems dataset carries no
-> NPC pathway annotations and so no per-config classifier can be defined
-> for it.
-
 The first executable slice is a Rust CLI that:
 
 - retrieves the harmonized annotated MS2 top-128 dataset or the GeMS-A10 top-128 dataset through `mascot-rs`.
