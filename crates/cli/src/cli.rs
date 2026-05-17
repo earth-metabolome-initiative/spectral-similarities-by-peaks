@@ -221,6 +221,13 @@ pub struct ComputePathwayDiscriminabilityArgs {
     /// Existing scan output directory with `pathway_scores.parquet`.
     #[arg(long, default_value = "results")]
     pub output_dir: PathBuf,
+    /// Always read the merged `pathway_scores.parquet` instead of walking
+    /// the `pathway_shards/` tree. Use when the local shard tree is
+    /// partial (e.g., still being transferred from the cluster) but the
+    /// merged file is complete — the default cluster-side behavior
+    /// prefers shards to keep peak memory bounded.
+    #[arg(long, default_value_t = false)]
+    pub from_merged: bool,
 }
 
 #[derive(Debug, Parser)]

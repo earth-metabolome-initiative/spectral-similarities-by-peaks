@@ -108,7 +108,11 @@ fn run_compute_pathway_discriminability(
     args: &crate::cli::ComputePathwayDiscriminabilityArgs,
 ) -> Result<()> {
     let progress = ScanProgress::new();
-    crate::pathway_discriminability::write_pathway_discriminability(&args.output_dir, &progress)
+    crate::pathway_discriminability::write_pathway_discriminability(
+        &args.output_dir,
+        args.from_merged,
+        &progress,
+    )
 }
 
 /// Render AUROC / AUPRC line plots from `pathway_discriminability.parquet`.

@@ -5,11 +5,15 @@
 //! `pathway_shards/<config>/top_<k>/pathway_scores.parquet` directly so we
 //! can compute discriminability before merging a transferred shard tree.
 //!
-//! Each row is labelled by `query_npc_pathway == candidate_npc_pathway`, and
-//! for each `(config, peak_count)` group we compute the area under the ROC
-//! and Precision-Recall curves of similarity scores as classifier of
-//! "same-pathway" vs "different-pathway" pairs. Aggregates to a per-config
-//! summary (mean AUROC / AUPRC across peak counts).
+//! Each row is labelled by `candidate_npc_pathway == query_npc_pathway`.
+//! For each `(dataset, config, peak_count, query_pathway)` group we compute
+//! a per-class (one-vs-rest) AUROC and AUPRC, treating queries in that
+//! pathway as the fixed positive class — emitted as
+//! `pathway_discriminability_per_class.parquet`. The micro-averaged
+//! aggregate over all queries (every same-pathway pair pooled against every
+//! different-pathway pair) is then computed from the union of the per-class
+//! samples and emitted as `pathway_discriminability.parquet` and its
+//! per-config mean summary.
 
 #![allow(
     clippy::cast_precision_loss,
@@ -131,7 +135,11 @@ pub fn auprc(samples: &mut [(f64, bool)]) -> f64 {
 ///
 /// Returns an error when the input parquet exists but cannot be opened or
 /// parsed, or when the output parquets cannot be written.
-pub fn write_pathway_discriminability(output_dir: &Path, progress: &ScanProgress) -> Result<()> {
+pub fn write_pathway_discriminability(
+    output_dir: &Path,
+    from_merged: bool,
+    progress: &ScanProgress,
+) -> Result<()> {
     let merged_path = output_dir.join("pathway_scores.parquet");
     let merged_size = fs::metadata(&merged_path).map_or(0, |m| m.len());
     let shard_root = output_dir.join("pathway_shards");
@@ -143,19 +151,20 @@ pub fn write_pathway_discriminability(output_dir: &Path, progress: &ScanProgress
     // which would need hundreds of GB of RAM on the harmonized corpus
     // (the cluster OOM-killed an earlier run when this branch was
     // preferred). Fall back to the merged file only when no shard
-    // directory is available.
-    let shard_paths = if shard_root.is_dir() {
-        collect_pathway_shard_paths(&shard_root)?
-    } else {
+    // directory is available — or when the caller forced
+    // `--from-merged` because the local shard tree is partial.
+    let shard_paths = if from_merged || !shard_root.is_dir() {
         Vec::new()
+    } else {
+        collect_pathway_shard_paths(&shard_root)?
     };
 
-    let mut cell_rows: Vec<CellRow> = if !shard_paths.is_empty() {
+    let (mut cell_rows, mut per_class_rows) = if !shard_paths.is_empty() {
         let task = progress.bar(
             u64::try_from(shard_paths.len()).unwrap_or(u64::MAX),
             "computing AUROC / AUPRC per shard",
         );
-        let rows = compute_cells_from_shards(&shard_paths, &task)?;
+        let rows = compute_rows_from_shards(&shard_paths, &task)?;
         task.finish();
         rows
     } else if merged_path.is_file() && merged_size >= 1024 {
@@ -166,7 +175,7 @@ pub fn write_pathway_discriminability(output_dir: &Path, progress: &ScanProgress
             return Ok(());
         }
         let compute_progress = progress.spinner("computing AUROC / AUPRC per (config, peak_count)");
-        let rows = compute_cells_from_groups(groups);
+        let rows = compute_rows_from_groups(groups);
         compute_progress.finish();
         rows
     } else {
@@ -181,12 +190,20 @@ pub fn write_pathway_discriminability(output_dir: &Path, progress: &ScanProgress
             .then(a.config.cmp(&b.config))
             .then(a.peak_count.cmp(&b.peak_count))
     });
+    per_class_rows.sort_by(|a, b| {
+        a.dataset
+            .cmp(&b.dataset)
+            .then(a.pathway.cmp(&b.pathway))
+            .then(a.config.cmp(&b.config))
+            .then(a.peak_count.cmp(&b.peak_count))
+    });
 
     let summary_rows = summarize_per_config(&cell_rows);
 
     let write_progress = progress.spinner("writing pathway_discriminability artifacts");
     write_cell_rows(output_dir, &cell_rows)?;
     write_summary_rows(output_dir, &summary_rows)?;
+    write_per_class_rows(output_dir, &per_class_rows)?;
     write_progress.finish();
     Ok(())
 }
@@ -211,16 +228,36 @@ struct SummaryRow {
     n_peak_counts: u64,
 }
 
-fn read_pathway_scores_grouped(
-    path: &Path,
-) -> Result<HashMap<(String, String, u64), Vec<(f64, bool)>>> {
+/// One row of `pathway_discriminability_per_class.parquet`. `pathway` is
+/// the fixed positive class for the one-vs-rest classifier: positives are
+/// candidate pairs whose `candidate_npc_pathway` equals `pathway`, drawn
+/// from queries whose `query_npc_pathway` also equals `pathway`.
+struct PerClassRow {
+    dataset: String,
+    config: String,
+    peak_count: u64,
+    pathway: String,
+    auroc: f64,
+    auprc: f64,
+    n_positives: u64,
+    n_negatives: u64,
+}
+
+/// Key used while accumulating pathway-pair scores: `(dataset, config,
+/// peak_count, query_pathway)`. Aggregating over `query_pathway` recovers
+/// the original `(dataset, config, peak_count)` grouping.
+type PerClassKey = (String, String, u64, String);
+/// Per-class score buckets used to compute one-vs-rest AUROC / AUPRC.
+type PerClassGroups = HashMap<PerClassKey, Vec<(f64, bool)>>;
+
+fn read_pathway_scores_grouped(path: &Path) -> Result<PerClassGroups> {
     let file = fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let reader = ParquetRecordBatchReaderBuilder::try_new(file)
         .with_context(|| format!("reading metadata from {}", path.display()))?
         .build()
         .with_context(|| format!("building reader for {}", path.display()))?;
 
-    let mut groups: HashMap<(String, String, u64), Vec<(f64, bool)>> = HashMap::new();
+    let mut groups: PerClassGroups = HashMap::new();
     for batch in reader {
         let batch = batch.with_context(|| format!("decoding batch in {}", path.display()))?;
         observe_batch(&batch, &mut groups)?;
@@ -259,22 +296,23 @@ fn collect_pathway_shard_paths(shard_root: &Path) -> Result<Vec<PathBuf>> {
 }
 
 /// Stream every shard in `paths` in parallel, computing AUROC / AUPRC for
-/// each shard's `(dataset, config, peak_count)` group and dropping the
-/// per-shard buffer before moving on.
+/// each shard's `(dataset, config, peak_count)` group (both per-pathway
+/// one-vs-rest and the micro-pooled aggregate) and dropping the per-shard
+/// buffer before moving on.
 ///
 /// Each shard file is exactly one `(config, peak_count)` cell of pairwise
 /// scores (one cell can hold tens of millions of rows), so loading them
 /// all simultaneously is not viable at cluster scale. The streaming
 /// per-shard approach keeps peak memory at roughly `rayon` thread count
 /// times the largest cell's score buffer.
-fn compute_cells_from_shards(
+fn compute_rows_from_shards(
     paths: &[PathBuf],
     progress: &crate::progress::ProgressTask,
-) -> Result<Vec<CellRow>> {
+) -> Result<(Vec<CellRow>, Vec<PerClassRow>)> {
     paths
         .par_iter()
         .map(|path| {
-            let mut groups: HashMap<(String, String, u64), Vec<(f64, bool)>> = HashMap::new();
+            let mut groups: PerClassGroups = HashMap::new();
             let file =
                 fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
             let reader = ParquetRecordBatchReaderBuilder::try_new(file)
@@ -286,25 +324,44 @@ fn compute_cells_from_shards(
                     batch.with_context(|| format!("decoding batch in {}", path.display()))?;
                 observe_batch(&batch, &mut groups)?;
             }
-            let rows = compute_cells_from_groups(groups);
+            let rows = compute_rows_from_groups(groups);
             progress.inc(1);
-            Ok::<Vec<CellRow>, anyhow::Error>(rows)
+            Ok::<(Vec<CellRow>, Vec<PerClassRow>), anyhow::Error>(rows)
         })
         .reduce(
-            || Ok(Vec::new()),
+            || Ok((Vec::new(), Vec::new())),
             |a, b| {
-                let mut a = a?;
-                a.extend(b?);
-                Ok(a)
+                let (mut a_cells, mut a_per_class) = a?;
+                let (b_cells, b_per_class) = b?;
+                a_cells.extend(b_cells);
+                a_per_class.extend(b_per_class);
+                Ok((a_cells, a_per_class))
             },
         )
 }
 
-/// Compute one `CellRow` per `(dataset, config, peak_count)` group, in place.
-fn compute_cells_from_groups(
-    groups: HashMap<(String, String, u64), Vec<(f64, bool)>>,
-) -> Vec<CellRow> {
-    groups
+/// From a per-class-keyed score map, compute one `PerClassRow` per
+/// `(dataset, config, peak_count, query_pathway)` and one micro-pooled
+/// `CellRow` per `(dataset, config, peak_count)` by concatenating samples
+/// across query pathways. Sample buffers are moved into the pooled map so
+/// the function ends with one allocation per pooled cell rather than two.
+fn compute_rows_from_groups(groups: PerClassGroups) -> (Vec<CellRow>, Vec<PerClassRow>) {
+    let mut per_class_rows: Vec<PerClassRow> = Vec::with_capacity(groups.len());
+    let mut pooled: HashMap<(String, String, u64), Vec<(f64, bool)>> = HashMap::new();
+    for ((dataset, config, peak_count, pathway), mut samples) in groups {
+        per_class_rows.push(per_class_row_from_samples(
+            &dataset,
+            &config,
+            peak_count,
+            &pathway,
+            &mut samples,
+        ));
+        pooled
+            .entry((dataset, config, peak_count))
+            .or_default()
+            .extend(samples);
+    }
+    let cell_rows: Vec<CellRow> = pooled
         .into_par_iter()
         .map(|((dataset, config, peak_count), mut samples)| {
             let n_pos = samples.iter().filter(|(_, label)| *label).count();
@@ -321,13 +378,35 @@ fn compute_cells_from_groups(
                 n_negatives: n_neg as u64,
             }
         })
-        .collect()
+        .collect();
+    (cell_rows, per_class_rows)
 }
 
-fn observe_batch(
-    batch: &RecordBatch,
-    groups: &mut HashMap<(String, String, u64), Vec<(f64, bool)>>,
-) -> Result<()> {
+/// Reusable AUROC / AUPRC computation for one per-class score bucket.
+fn per_class_row_from_samples(
+    dataset: &str,
+    config: &str,
+    peak_count: u64,
+    pathway: &str,
+    samples: &mut [(f64, bool)],
+) -> PerClassRow {
+    let n_pos = samples.iter().filter(|(_, label)| *label).count();
+    let n_neg = samples.len() - n_pos;
+    let auroc_value = auroc(samples);
+    let auprc_value = auprc(samples);
+    PerClassRow {
+        dataset: dataset.to_string(),
+        config: config.to_string(),
+        peak_count,
+        pathway: pathway.to_string(),
+        auroc: auroc_value,
+        auprc: auprc_value,
+        n_positives: n_pos as u64,
+        n_negatives: n_neg as u64,
+    }
+}
+
+fn observe_batch(batch: &RecordBatch, groups: &mut PerClassGroups) -> Result<()> {
     let datasets = required_column::<StringArray>(batch, "dataset")?;
     let configs = required_column::<StringArray>(batch, "config")?;
     let peak_counts = required_column::<UInt64Array>(batch, "peak_count")?;
@@ -344,13 +423,14 @@ fn observe_batch(
         let dataset = datasets.value(row).to_string();
         let config = configs.value(row).to_string();
         let peak_count = peak_counts.value(row);
-        let label = query_pathways.value(row) == candidate_pathways.value(row);
+        let query_pathway = query_pathways.value(row).to_string();
+        let label = candidate_pathways.value(row) == query_pathway.as_str();
         let score = scores.value(row);
         if !score.is_finite() {
             continue;
         }
         groups
-            .entry((dataset, config, peak_count))
+            .entry((dataset, config, peak_count, query_pathway))
             .or_default()
             .push((score, label));
     }
@@ -411,6 +491,19 @@ fn cell_schema() -> SchemaRef {
     ]))
 }
 
+fn per_class_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("dataset", DataType::Utf8, false),
+        Field::new("config", DataType::Utf8, false),
+        Field::new("peak_count", DataType::UInt64, false),
+        Field::new("pathway", DataType::Utf8, false),
+        Field::new("auroc", DataType::Float64, true),
+        Field::new("auprc", DataType::Float64, true),
+        Field::new("n_positives", DataType::UInt64, false),
+        Field::new("n_negatives", DataType::UInt64, false),
+    ]))
+}
+
 fn summary_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("dataset", DataType::Utf8, false),
@@ -455,6 +548,49 @@ fn write_cell_rows(output_dir: &Path, rows: &[CellRow]) -> Result<()> {
             Arc::new(datasets),
             Arc::new(configs),
             Arc::new(peak_counts),
+            Arc::new(auroc_values),
+            Arc::new(auprc_values),
+            Arc::new(n_pos),
+            Arc::new(n_neg),
+        ],
+    )
+    .with_context(|| format!("building record batch for {}", path.display()))?;
+    let file = fs::File::create(&path).with_context(|| format!("creating {}", path.display()))?;
+    let mut writer = ArrowWriter::try_new(file, schema, Some(parquet_writer_props()))
+        .with_context(|| format!("opening writer for {}", path.display()))?;
+    writer
+        .write(&batch)
+        .with_context(|| format!("writing rows to {}", path.display()))?;
+    writer
+        .close()
+        .with_context(|| format!("finalizing {}", path.display()))?;
+    Ok(())
+}
+
+fn write_per_class_rows(output_dir: &Path, rows: &[PerClassRow]) -> Result<()> {
+    let path = output_dir.join("pathway_discriminability_per_class.parquet");
+    let datasets: StringArray = rows.iter().map(|r| Some(r.dataset.as_str())).collect();
+    let configs: StringArray = rows.iter().map(|r| Some(r.config.as_str())).collect();
+    let peak_counts: UInt64Array = rows.iter().map(|r| r.peak_count).collect();
+    let pathways: StringArray = rows.iter().map(|r| Some(r.pathway.as_str())).collect();
+    let auroc_values: Float64Array = rows
+        .iter()
+        .map(|r| r.auroc.is_finite().then_some(r.auroc))
+        .collect();
+    let auprc_values: Float64Array = rows
+        .iter()
+        .map(|r| r.auprc.is_finite().then_some(r.auprc))
+        .collect();
+    let n_pos: UInt64Array = rows.iter().map(|r| r.n_positives).collect();
+    let n_neg: UInt64Array = rows.iter().map(|r| r.n_negatives).collect();
+    let schema = per_class_schema();
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(datasets),
+            Arc::new(configs),
+            Arc::new(peak_counts),
+            Arc::new(pathways),
             Arc::new(auroc_values),
             Arc::new(auprc_values),
             Arc::new(n_pos),
