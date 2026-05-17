@@ -9,11 +9,11 @@ Experiment on measuring when MS2 spectral similarity distributions stop changing
 
 > [!NOTE]
 > Results are still being processed. The numbers and tables shown in this
-> README are preliminary. In particular, the pathway-classification
-> evaluations (AUROC and AUPRC of pathway-pair similarity scores) are not yet
-> available for either dataset, because the harmonized `pathway_scores.parquet`
-> file is still being transferred from the cluster and the gems dataset has no
-> pathway annotations.
+> README are preliminary. The pathway-classification AUROC / AUPRC numbers
+> in [Pathway-classification results](#pathway-classification-results) are
+> available for the harmonized dataset only; the gems dataset carries no
+> NPC pathway annotations and so no per-config classifier can be defined
+> for it.
 
 The first executable slice is a Rust CLI that:
 
@@ -127,6 +127,9 @@ Outputs:
 - `pathway_prediction_distribution_grid.npz`: dense NumPy matrices for total variation, Jensen-Shannon distance, and Hellinger distance between prediction distributions.
 - `pathway_prediction_heatmaps/<config>/*.svg` and `pathway_prediction_heatmaps/<config>/*.png`: static heatmaps for categorical prediction-distribution drift.
 - `pathway_prediction_plots/<config>/*.svg` and `pathway_prediction_plots/<config>/*.png`: accuracy and MCC line plots by retained peak count, with one line per pathway and one support-weighted average line.
+- `pathway_discriminability.parquet`: per-`(dataset, config, peak_count)` AUROC and AUPRC for the binary pathway-pair classifier (candidate pathway matches query pathway), plus `n_positives` and `n_negatives`.
+- `pathway_discriminability_summary.parquet`: per-`(dataset, config)` mean AUROC / mean AUPRC across the peak-count grid.
+- `pathway_discriminability_plots/auroc.{svg,png}` and `pathway_discriminability_plots/auprc.{svg,png}`: AUROC and AUPRC line plots by retained peak count with one line per similarity config; colour encodes the metric family and dash pattern encodes the m/z exponent.
 
 The peak-count grid is always `1..=128`, so `distribution_grid.npz` contains full `128 x 128` matrices. `--row-sample-size` samples query rows, while `--reference-sample-size` samples the fixed reference columns used by nearest-neighbor search. The selected query and reference ids are reused across every peak count, so distribution changes are attributable to peak retention rather than changing samples.
 
@@ -136,6 +139,38 @@ Existing `pathway_predictions.parquet` outputs can be reprocessed with `render-p
 
 ```bash
 target/release/spectral-similarities-by-peaks render-pathway-artifacts \
+  --output-dir results/harmonized-full
+```
+
+## Pathway-classification results
+
+Each `(config, peak_count)` cell of `pathway_scores.parquet` defines a binary classifier: the positive class is "candidate NPC pathway equals the query NPC pathway", and the similarity score itself ranks pairs. AUROC and AUPRC of that ranking measure how well the metric concentrates within-pathway similarity above cross-pathway similarity, independent of any chosen significance threshold. The summary table below reports `mean_auroc` and `mean_auprc` averaged across the `1..=128` peak grid for each config on the harmonized dataset, sorted by mean AUROC descending. On this dataset all 18 configurations sit close to the 0.5 random-classifier baseline, so the similarity score alone is a weak ranker of pathway co-membership: even the best config (modified entropy with weighted peaks) reaches only `mean_auroc = 0.519`.
+
+| Config | Mean AUROC | Mean AUPRC |
+| --- | ---: | ---: |
+| `modified_entropy_mz0.000_int1.000_weightedtrue` | 0.5190 | 0.1428 |
+| `modified_cosine_mz0.000_int0.250` | 0.5147 | 0.1496 |
+| `modified_cosine_mz0.000_int1.000` | 0.5063 | 0.1378 |
+| `modified_cosine_mz1.000_int0.250` | 0.5056 | 0.1336 |
+| `modified_cosine_mz0.000_int0.500` | 0.5021 | 0.1365 |
+| `modified_cosine_mz1.000_int1.000` | 0.4997 | 0.1331 |
+| `modified_entropy_mz0.000_int1.000_weightedfalse` | 0.4986 | 0.1360 |
+| `entropy_mz0.000_int1.000_weightedtrue` | 0.4935 | 0.1630 |
+| `cosine_mz1.000_int0.250` | 0.4923 | 0.1610 |
+| `modified_cosine_mz1.000_int0.500` | 0.4910 | 0.1287 |
+| `cosine_mz3.000_int0.600` | 0.4805 | 0.1398 |
+| `cosine_mz0.000_int0.250` | 0.4778 | 0.1600 |
+| `cosine_mz1.000_int0.500` | 0.4658 | 0.1482 |
+| `modified_cosine_mz3.000_int0.600` | 0.4621 | 0.1194 |
+| `cosine_mz0.000_int0.500` | 0.4591 | 0.1519 |
+| `entropy_mz0.000_int1.000_weightedfalse` | 0.4545 | 0.1505 |
+| `cosine_mz1.000_int1.000` | 0.4539 | 0.1342 |
+| `cosine_mz0.000_int1.000` | 0.4515 | 0.1335 |
+
+Per-config curves of AUROC and AUPRC by retained peak count are written to `pathway_discriminability_plots/auroc.{svg,png}` and `pathway_discriminability_plots/auprc.{svg,png}` (one line per config, colour by metric family, dash pattern by m/z exponent). The plots themselves are regenerated from the same parquets with:
+
+```bash
+target/release/spectral-similarities-by-peaks render-pathway-discriminability \
   --output-dir results/harmonized-full
 ```
 
