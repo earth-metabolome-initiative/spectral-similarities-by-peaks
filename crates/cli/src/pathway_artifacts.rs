@@ -54,9 +54,9 @@ const HEATMAP_CHART_WIDTH: u32 = 860;
 /// Number of colorbar rectangles in heatmap legends.
 const COLORBAR_STEPS: usize = 256;
 /// Width of pathway metric line plots in pixels.
-const LINE_PLOT_WIDTH: u32 = 1_200;
+pub const LINE_PLOT_WIDTH: u32 = 1_200;
 /// Height of pathway metric line plots in pixels.
-const LINE_PLOT_HEIGHT: u32 = 760;
+pub const LINE_PLOT_HEIGHT: u32 = 760;
 /// Color used for non-finite heatmap cells.
 const NON_FINITE_COLOR: RGBColor = RGBColor(180, 180, 180);
 
@@ -1283,6 +1283,6 @@ where
 }
 
 /// Convert a `usize` to `i32` for plotting coordinates.
-fn usize_to_i32(value: usize) -> Result<i32> {
+pub fn usize_to_i32(value: usize) -> Result<i32> {
     i32::try_from(value).context("plot coordinate does not fit i32")
 }
