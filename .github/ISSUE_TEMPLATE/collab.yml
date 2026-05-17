@@ -1,0 +1,136 @@
+name: "I want to collab!"
+description: "Express interest in collaborating on the spectral-similarities-by-peaks experiment."
+title: "[Collab] "
+labels:
+  - collab
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for your interest. Fill in the form so we can scope what you want
+        to explore and what compute we can run together. None of these fields
+        is strictly required except the few marked with an asterisk in the
+        right-hand column.
+
+  - type: input
+    id: name
+    attributes:
+      label: Name
+      description: "Your full name."
+      placeholder: "Marie Curie"
+    validations:
+      required: true
+
+  - type: input
+    id: affiliation
+    attributes:
+      label: Affiliation
+      description: "Institution, lab, or company."
+      placeholder: "Earth Metabolome Initiative"
+    validations:
+      required: true
+
+  - type: input
+    id: orcid
+    attributes:
+      label: ORCID iD
+      description: "Format 0000-0000-0000-0000. https://orcid.org/"
+      placeholder: "0000-0002-1825-0097"
+    validations:
+      required: false
+
+  - type: input
+    id: email
+    attributes:
+      label: Email (optional)
+      description: "Where we should reach you for back-and-forth that doesn't fit in the GitHub thread."
+      placeholder: "you@example.org"
+    validations:
+      required: false
+
+  - type: textarea
+    id: compute
+    attributes:
+      label: Compute you can access
+      description: |
+        Cluster, cloud, or workstation. Rough number of CPU cores, RAM,
+        GPU model and VRAM, and the total CPU- or GPU-hours you could
+        allocate to the project.
+      placeholder: |
+        e.g. 200-core SLURM partition on our local HPC, ~10 000 CPU-hours,
+        no GPU; plus a 1 TB-RAM workstation for ad-hoc runs.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: datasets
+    attributes:
+      label: Dataset(s) you want to look at
+      multiple: true
+      options:
+        - "harmonized annotated dataset"
+        - "GeMS-A10 (full)"
+        - "GeMS-A10 (sampled)"
+        - "I want to bring my own dataset"
+        - "Not sure yet"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: similarity_families
+    attributes:
+      label: Similarity families you want to compare
+      options:
+        - label: Cosine
+        - label: Modified cosine
+        - label: Entropy
+        - label: Modified entropy
+        - label: Other (describe in the parametrizations field)
+
+  - type: textarea
+    id: parameters
+    attributes:
+      label: Parametrizations of interest
+      description: |
+        m/z exponent, intensity exponent, entropy weighting, retained
+        peak-count range, anything else.
+      placeholder: |
+        e.g. cosine with m/z exp 1.0 and intensity exp 0.25 across the full
+        1..=128 peak grid; modified-entropy with the weighting flag toggled.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: tasks
+    attributes:
+      label: Downstream tasks you care about
+      multiple: true
+      options:
+        - "Pathway-pair classification (AUROC / AUPRC)"
+        - "Per-pathway one-vs-rest accuracy / MCC"
+        - "Score-distribution drift across peak counts"
+        - "Cross-dataset transfer (harmonized ↔ GeMS-A10)"
+        - "New similarity metric or weighting scheme"
+        - "Other (describe below)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation and scientific question
+      description: |
+        What are you trying to answer? What does success look like? Which
+        downstream task or paper does this feed into?
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: |
+        Constraints, deadlines, preferred communication channel, related
+        code, papers, or in-house tools we should know about.
+    validations:
+      required: false

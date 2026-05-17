@@ -32,9 +32,8 @@ body {
 }
 
 .hero {
-    padding-bottom: 1rem;
-    border-bottom: 1px solid var(--line);
-    margin-bottom: 1rem;
+    padding-bottom: 0;
+    margin-bottom: 0.4rem;
 }
 
 .eyebrow {
@@ -57,6 +56,18 @@ body {
 
 .hero-accent { color: var(--rust); }
 
+.hero-titlebar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.6rem;
+}
+
+.hero-titlebar .hero-title { margin: 0; }
+.hero-titlebar .pill-row.hero-actions { margin-top: 0; }
+
 .tagline {
     color: var(--muted);
     margin: 0 0 1rem 0;
@@ -64,7 +75,7 @@ body {
 }
 
 .abstract {
-    margin: 0 0 1.25rem 0;
+    margin: 0 0 0.4rem 0;
     color: var(--text);
     width: 100%;
     font-size: 0.95rem;
@@ -131,6 +142,28 @@ body {
     pointer-events: none;
 }
 
+/* Hero action row sticks to the right edge of the abstract column. */
+.pill-row.hero-actions {
+    justify-content: flex-end;
+    margin-top: 0.25rem;
+}
+
+/* Eye-catching call-to-action for the collaboration button. The gradient
+   plus a soft glow lifts it off the otherwise muted earth-tone palette
+   without screaming for attention. */
+.pill.pill-collab {
+    color: #fff;
+    background: linear-gradient(135deg, #ec4899 0%, #8b5cf6 55%, #6366f1 100%);
+    border-color: transparent;
+    font-weight: 600;
+    box-shadow: 0 4px 14px rgba(139, 92, 246, 0.28);
+}
+.pill.pill-collab:hover {
+    border-color: transparent;
+    filter: brightness(1.06);
+    box-shadow: 0 6px 18px rgba(139, 92, 246, 0.38);
+}
+
 .pill .pill-icon {
     width: 1em;
     height: 1em;
@@ -138,7 +171,7 @@ body {
 }
 
 .panel {
-    background: var(--surface);
+    background: #ffffff;
     border: 1px solid var(--line);
     border-radius: 20px;
     padding: 1.25rem;
@@ -216,12 +249,34 @@ body {
     width: 100%;
 }
 
-.heatmap-frame svg {
+.heatmap-frame svg,
+.heatmap-frame .heatmap-image {
     display: block;
     width: 100%;
     height: auto;
     max-height: 78vh;
 }
+
+/* Toolbar floats in the top-right corner of the figure panel. */
+.panel.panel-figure { position: relative; }
+.figure-actions {
+    position: absolute;
+    top: 0.85rem;
+    right: 0.85rem;
+    display: flex;
+    gap: 0.5rem;
+    z-index: 1;
+}
+
+/* Subtle, neutral pill for the SVG-download anchor. */
+.pill.download-pill {
+    background: rgba(20, 34, 41, 0.04);
+    border-color: var(--line);
+    color: var(--text);
+    font-size: 13px;
+    padding: 0.35rem 0.7rem;
+}
+.pill.download-pill:hover { border-color: var(--line-strong); }
 
 .figure-caption {
     display: block;
