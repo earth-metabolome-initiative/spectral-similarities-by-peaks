@@ -144,11 +144,28 @@ target/release/spectral-similarities-by-peaks render-pathway-artifacts \
 
 ## Pathway-classification results
 
-Each `(config, peak_count)` cell of `pathway_scores.parquet` defines a binary classifier: the positive class is "candidate NPC pathway equals the query NPC pathway", and the similarity score itself ranks pairs. AUROC and AUPRC of that ranking measure how well the metric concentrates within-pathway similarity above cross-pathway similarity, independent of any chosen significance threshold. The summary table below reports each config's **best** AUROC and AUPRC across the `1..=128` peak grid on the harmonized dataset, together with the peak count at which each maximum is reached, sorted by best AUROC descending. Numbers come from `pathway_discriminability_summary.parquet` (`best_auroc`, `best_auroc_peak_count`, `best_auprc`, `best_auprc_peak_count`).
+Each `(config, peak_count)` cell of `pathway_scores.parquet` defines a binary classifier: the positive class is "candidate NPC pathway equals the query NPC pathway", and the similarity score itself ranks pairs. AUROC and AUPRC of that ranking measure how well the metric concentrates within-pathway similarity above cross-pathway similarity, independent of any chosen significance threshold. The summary table below reports each config's **best** AUROC and AUPRC across the `1..=128` peak grid on the harmonized dataset, together with the peak count at which each maximum is reached, sorted by best AUROC descending. Numbers come from `pathway_discriminability_summary.parquet` (`best_auroc`, `best_auroc_peak_count`, `best_auprc`, `best_auprc_peak_count`). All 18 configs sit just above the 0.5 random-classifier baseline, and the best operating point tends to land in the 13–16 retained-peak range, suggesting that mid-cardinality fragment subsets carry more pathway-discriminative information than either single peaks or the full top-128.
 
 | Config | Best AUROC | Top-k @ best AUROC | Best AUPRC | Top-k @ best AUPRC |
 | --- | ---: | ---: | ---: | ---: |
-| _populated from `pathway_discriminability_summary.parquet` after the next cluster compute run_ | | | | |
+| `cosine_mz1.000_int0.250` | 0.5387 | 16 | 0.1751 | 29 |
+| `modified_cosine_mz0.000_int0.250` | 0.5356 | 15 | 0.1523 | 90 |
+| `entropy_mz0.000_int1.000_weightedtrue` | 0.5351 | 16 | 0.1695 | 29 |
+| `cosine_mz3.000_int0.600` | 0.5345 | 14 | 0.1534 | 18 |
+| `cosine_mz0.000_int0.250` | 0.5328 | 15 | 0.1713 | 29 |
+| `modified_entropy_mz0.000_int1.000_weightedtrue` | 0.5324 | 13 | 0.1447 | 1 |
+| `cosine_mz1.000_int0.500` | 0.5286 | 14 | 0.1541 | 28 |
+| `cosine_mz0.000_int0.500` | 0.5260 | 14 | 0.1555 | 28 |
+| `modified_cosine_mz0.000_int1.000` | 0.5256 | 5 | 0.1447 | 1 |
+| `entropy_mz0.000_int1.000_weightedfalse` | 0.5243 | 14 | 0.1538 | 41 |
+| `modified_cosine_mz0.000_int0.500` | 0.5240 | 1 | 0.1447 | 1 |
+| `modified_cosine_mz1.000_int0.250` | 0.5240 | 1 | 0.1447 | 1 |
+| `modified_cosine_mz1.000_int0.500` | 0.5240 | 1 | 0.1447 | 1 |
+| `modified_cosine_mz1.000_int1.000` | 0.5240 | 1 | 0.1447 | 1 |
+| `modified_cosine_mz3.000_int0.600` | 0.5240 | 1 | 0.1447 | 1 |
+| `modified_entropy_mz0.000_int1.000_weightedfalse` | 0.5240 | 1 | 0.1447 | 1 |
+| `cosine_mz1.000_int1.000` | 0.5234 | 14 | 0.1438 | 13 |
+| `cosine_mz0.000_int1.000` | 0.5225 | 14 | 0.1426 | 9 |
 
 Per-config curves of AUROC and AUPRC by retained peak count are written to `pathway_discriminability_plots/auroc.{svg,png}` and `pathway_discriminability_plots/auprc.{svg,png}` (one line per config, colour by metric family, dash pattern by m/z exponent). The plots themselves are regenerated from the same parquets with:
 
