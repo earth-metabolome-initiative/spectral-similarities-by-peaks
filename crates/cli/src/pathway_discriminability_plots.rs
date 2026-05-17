@@ -33,6 +33,7 @@ use arrow_array::{Array, Float64Array, RecordBatch, StringArray, UInt64Array};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use plotters::{
     coord::Shift,
+    element::DashedPathElement,
     prelude::{
         BLACK, BitMapBackend, ChartBuilder, DashedLineSeries, DrawingArea, DrawingBackend,
         IntoDrawingArea, LineSeries, PathElement, SVGBackend, SeriesLabelPosition, WHITE,
@@ -566,20 +567,18 @@ where
                     .map_err(plotters_error)?
                     .label(label)
                     .legend(move |(x, y)| {
-                        // Visually approximate the dashed series in the
-                        // legend by stacking two short segments separated
-                        // by a gap; plotters' DashedPathElement does the
-                        // full pattern, but for a 28 px legend swatch a
-                        // pair of solid dashes reads more cleanly.
-                        let dash_len = i32::try_from(size).unwrap_or(8).clamp(2, 14);
-                        let gap = i32::try_from(spacing).unwrap_or(4).max(2);
-                        PathElement::new(
-                            vec![
-                                (x, y),
-                                (x + dash_len, y),
-                                (x + dash_len + gap, y),
-                                (x + dash_len + gap + dash_len, y),
-                            ],
+                        // Mirror the chart's dash pattern in the legend
+                        // swatch so dashed (mz=1.0) and dotted (mz=3.0)
+                        // series read as visibly different from the
+                        // solid (mz=0.0) ones. `PathElement` with stacked
+                        // segments would render as a single polyline
+                        // (the per-segment gap is filled in), so we have
+                        // to use the same `DashedPathElement` that the
+                        // series itself emits.
+                        DashedPathElement::new(
+                            vec![(x, y), (x + 28, y)],
+                            size,
+                            spacing,
                             series_style,
                         )
                     });
