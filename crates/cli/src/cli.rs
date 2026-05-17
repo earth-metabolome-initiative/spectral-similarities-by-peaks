@@ -66,9 +66,6 @@ pub enum Commands {
     /// Rewrite every `.parquet` under an output directory using this crate's
     /// default zstd codec, preserving random columnar access.
     ReEncodeParquets(ReEncodeParquetsArgs),
-    /// Walk every `.parquet` under an output directory and report each
-    /// file's declared compression codec plus a per-codec summary.
-    VerifyParquetCodecs(VerifyParquetCodecsArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -256,17 +253,6 @@ pub struct ReEncodeParquetsArgs {
     /// place using this crate's default zstd compression.
     #[arg(long, default_value = "results")]
     pub output_dir: PathBuf,
-}
-
-#[derive(Debug, Parser)]
-/// Arguments for the `verify-parquet-codecs` subcommand.
-pub struct VerifyParquetCodecsArgs {
-    /// Root directory whose `.parquet` files should be inspected.
-    #[arg(long, default_value = "results")]
-    pub output_dir: PathBuf,
-    /// Suppress the per-file listing and print only the summary.
-    #[arg(long, default_value_t = false)]
-    pub quiet: bool,
 }
 
 impl RenderHeatmapArgs {
