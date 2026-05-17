@@ -132,22 +132,37 @@ impl DiscriminabilityMetric {
         }
     }
 
-    /// Fixed y-axis range. AUROC starts slightly below 0.5 so the random
-    /// baseline is visible; AUPRC spans the full unit interval since its
-    /// baseline depends on class prior.
-    const fn y_range(self) -> (f64, f64) {
-        match self {
-            Self::Auroc => (0.45, 1.0),
-            Self::Auprc => (0.0, 1.0),
-        }
-    }
-
     /// Read the metric value from a row.
     const fn value(self, row: &DiscriminabilityRow) -> f64 {
         match self {
             Self::Auroc => row.auroc,
             Self::Auprc => row.auprc,
         }
+    }
+}
+
+/// Compute a focused y-axis range for one metric across `rows`, padding the
+/// observed min/max by 8 % of the span so curves don't touch the chart
+/// frame. Clipped to `[0.0, 1.0]` since AUROC and AUPRC are bounded.
+fn focused_y_range(metric: DiscriminabilityMetric, rows: &[DiscriminabilityRow]) -> (f64, f64) {
+    let (min, max) = rows
+        .iter()
+        .map(|row| metric.value(row))
+        .filter(|value| value.is_finite())
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), value| {
+            (lo.min(value), hi.max(value))
+        });
+    if !min.is_finite() || !max.is_finite() {
+        return (0.0, 1.0);
+    }
+    let span = (max - min).max(0.01);
+    let pad = span * 0.08;
+    let lower = (min - pad).max(0.0);
+    let upper = (max + pad).min(1.0);
+    if upper - lower < 0.01 {
+        ((lower - 0.005).max(0.0), (upper + 0.005).min(1.0))
+    } else {
+        (lower, upper)
     }
 }
 
@@ -365,7 +380,7 @@ where
     Backend::ErrorType: std::fmt::Debug,
 {
     root.fill(&WHITE).map_err(plotters_error)?;
-    let (y_min, y_max) = metric.y_range();
+    let (y_min, y_max) = focused_y_range(metric, rows);
     let x_end = i32::try_from(largest_peak_count(rows).saturating_add(1))
         .context("peak count axis upper bound does not fit i32")?;
     let mut chart = ChartBuilder::on(root)
