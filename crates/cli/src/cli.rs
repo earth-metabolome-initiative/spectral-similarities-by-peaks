@@ -59,6 +59,8 @@ pub enum Commands {
     RenderPathwayArtifacts(RenderPathwayArtifactArgs),
     /// Compute per-config AUROC / AUPRC of pathway-pair similarity scores.
     ComputePathwayDiscriminability(ComputePathwayDiscriminabilityArgs),
+    /// Render AUROC / AUPRC line plots from `pathway_discriminability.parquet`.
+    RenderPathwayDiscriminability(RenderPathwayDiscriminabilityArgs),
     /// Rank similarity configs by the mean KS statistic of their distribution grid.
     ComputeConfigDiversity(ComputeConfigDiversityArgs),
     /// Rewrite every `.parquet` under an output directory using this crate's
@@ -217,6 +219,14 @@ pub struct RenderPathwayArtifactArgs {
 /// Arguments for the `compute-pathway-discriminability` subcommand.
 pub struct ComputePathwayDiscriminabilityArgs {
     /// Existing scan output directory with `pathway_scores.parquet`.
+    #[arg(long, default_value = "results")]
+    pub output_dir: PathBuf,
+}
+
+#[derive(Debug, Parser)]
+/// Arguments for the `render-pathway-discriminability` subcommand.
+pub struct RenderPathwayDiscriminabilityArgs {
+    /// Existing output directory with `pathway_discriminability.parquet`.
     #[arg(long, default_value = "results")]
     pub output_dir: PathBuf,
 }

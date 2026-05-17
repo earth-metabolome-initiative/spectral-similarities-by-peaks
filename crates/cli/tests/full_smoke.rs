@@ -57,6 +57,15 @@ fn full_scan_smoke_test_produces_expected_artifacts() -> Result<(), Box<dyn Erro
     assert_heatmap_artifacts(&output_dir)?;
     assert_pathway_prediction_artifacts(&output_dir)?;
 
+    let cli = smoke_compute_pathway_discriminability_cli(&output_dir)?;
+    run::run(cli)?;
+    assert_parquet_nonempty(&output_dir.join("pathway_discriminability.parquet"))?;
+    assert_parquet_nonempty(&output_dir.join("pathway_discriminability_summary.parquet"))?;
+
+    let cli = smoke_render_pathway_discriminability_cli(&output_dir)?;
+    run::run(cli)?;
+    assert_pathway_discriminability_artifacts(&output_dir)?;
+
     fs::remove_dir_all(root)?;
     Ok(())
 }
@@ -316,6 +325,30 @@ fn smoke_scan_cli(data_dir: &Path, output_dir: &Path) -> Result<Cli, Box<dyn Err
         "18",
         "--seed",
         "42",
+    ])?)
+}
+
+/// Build the synthetic compute-pathway-discriminability command used by the smoke test.
+fn smoke_compute_pathway_discriminability_cli(output_dir: &Path) -> Result<Cli, Box<dyn Error>> {
+    Ok(Cli::try_parse_from([
+        "spectral-similarities-by-peaks",
+        "compute-pathway-discriminability",
+        "--output-dir",
+        output_dir
+            .to_str()
+            .ok_or("temporary output directory path is not valid UTF-8")?,
+    ])?)
+}
+
+/// Build the synthetic render-pathway-discriminability command used by the smoke test.
+fn smoke_render_pathway_discriminability_cli(output_dir: &Path) -> Result<Cli, Box<dyn Error>> {
+    Ok(Cli::try_parse_from([
+        "spectral-similarities-by-peaks",
+        "render-pathway-discriminability",
+        "--output-dir",
+        output_dir
+            .to_str()
+            .ok_or("temporary output directory path is not valid UTF-8")?,
     ])?)
 }
 
@@ -928,6 +961,19 @@ fn assert_single_config_pathway_prediction_artifacts(
         let stem = output_dir
             .join("pathway_prediction_plots")
             .join(config)
+            .join(metric);
+        assert_svg_artifact(&stem.with_extension("svg"))?;
+        assert_png_artifact(&stem.with_extension("png"))?;
+    }
+    Ok(())
+}
+
+/// Assert that the AUROC / AUPRC line plots from render-pathway-discriminability
+/// were written in both SVG and PNG form.
+fn assert_pathway_discriminability_artifacts(output_dir: &Path) -> Result<(), Box<dyn Error>> {
+    for metric in ["auroc", "auprc"] {
+        let stem = output_dir
+            .join("pathway_discriminability_plots")
             .join(metric);
         assert_svg_artifact(&stem.with_extension("svg"))?;
         assert_png_artifact(&stem.with_extension("png"))?;

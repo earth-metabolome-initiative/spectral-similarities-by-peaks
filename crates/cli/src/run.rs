@@ -18,7 +18,8 @@ use crate::{
     checkpoint::{self, CheckpointBase, RunFingerprint},
     cli::{
         Cli, Commands, FinalizeMergeArgs, FinalizeScanArgs, FinalizeShardArgs, PrefetchArgs,
-        RenderHeatmapArgs, RenderPathwayArtifactArgs, ScanArgs, ScanShardArgs,
+        RenderHeatmapArgs, RenderPathwayArtifactArgs, RenderPathwayDiscriminabilityArgs, ScanArgs,
+        ScanShardArgs,
     },
     data::{self, load_dataset_records, load_records},
     distribution::{
@@ -60,6 +61,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::ComputePathwayDiscriminability(args) => {
             run_compute_pathway_discriminability(&args)
         }
+        Commands::RenderPathwayDiscriminability(args) => run_render_pathway_discriminability(&args),
         Commands::ComputeConfigDiversity(args) => run_compute_config_diversity(&args),
         Commands::ReEncodeParquets(args) => run_re_encode_parquets(&args),
     }
@@ -107,6 +109,15 @@ fn run_compute_pathway_discriminability(
 ) -> Result<()> {
     let progress = ScanProgress::new();
     crate::pathway_discriminability::write_pathway_discriminability(&args.output_dir, &progress)
+}
+
+/// Render AUROC / AUPRC line plots from `pathway_discriminability.parquet`.
+fn run_render_pathway_discriminability(args: &RenderPathwayDiscriminabilityArgs) -> Result<()> {
+    let progress = ScanProgress::new();
+    crate::pathway_discriminability_plots::write_pathway_discriminability_plots(
+        &args.output_dir,
+        &progress,
+    )
 }
 
 /// Compute per-config mean KS statistic and rank configs by "diversity".
@@ -1570,6 +1581,7 @@ mod tests {
             | Commands::RenderHeatmaps(_)
             | Commands::RenderPathwayArtifacts(_)
             | Commands::ComputePathwayDiscriminability(_)
+            | Commands::RenderPathwayDiscriminability(_)
             | Commands::ComputeConfigDiversity(_)
             | Commands::ReEncodeParquets(_) => {
                 anyhow::bail!("expected scan command")
@@ -1609,6 +1621,7 @@ mod tests {
             | Commands::RenderHeatmaps(_)
             | Commands::RenderPathwayArtifacts(_)
             | Commands::ComputePathwayDiscriminability(_)
+            | Commands::RenderPathwayDiscriminability(_)
             | Commands::ComputeConfigDiversity(_)
             | Commands::ReEncodeParquets(_) => {
                 anyhow::bail!("expected scan-shard command")
@@ -1655,6 +1668,7 @@ mod tests {
             | Commands::RenderHeatmaps(_)
             | Commands::RenderPathwayArtifacts(_)
             | Commands::ComputePathwayDiscriminability(_)
+            | Commands::RenderPathwayDiscriminability(_)
             | Commands::ComputeConfigDiversity(_)
             | Commands::ReEncodeParquets(_) => {
                 anyhow::bail!("expected scan-shard command")
