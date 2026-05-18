@@ -549,14 +549,14 @@ fn Hero() -> Element {
                     rel: "noopener noreferrer",
                     "Lindley's-paradox"
                 }
-                " territory and the figures rely on the sample-size-invariant D statistic. A second line of inquiry scores pathway pairs by AUROC, AUPRC, accuracy, and Matthews correlation coefficient per (config, pathway, retained-peak-count) cell, with a pair positive when the candidate spectrum's "
+                " territory and the figures rely on the sample-size-invariant D statistic. A second line of inquiry builds a fixed reference panel of up to 35 spectra (the first 5 labeled examples of each of the 7 base "
                 a {
                     href: "https://doi.org/10.1186/s13321-022-00624-5",
                     target: "_blank",
                     rel: "noopener noreferrer",
                     "NPClassifier"
                 }
-                " pathway matches the query's. Pooled micro-averaged the signal is weak (AUROC 0.45 to 0.54), but per-pathway one-vs-rest reaches AUROC 0.67 to 0.68 on Terpenoids and Shikimates / Phenylpropanoids at top-27 to top-47 under low-intensity-exponent cosines, 0.64 on Polyketides under direct cosine with full intensity weighting, near 0.60 on Amino acids and Peptides and on Carbohydrates under NIST-style m/z weighting, and barely above chance on Alkaloids and Fatty acids. The Pathways tab below lets the reader pick a pathway and metric and toggle similarity-family, m/z, intensity, and entropy-weighting filters."
+                " pathways), scores every query against the panel as the sum of similarity hits to each pathway's representatives, and reads the resulting per-pathway score-sums two ways: as a threshold-free ranking with AUROC and AUPRC (micro-averaged across all queries and one-vs-rest per pathway) and as an argmax categorical prediction whose one-vs-rest accuracy and Matthews correlation coefficient are reported per pathway and as a support-weighted aggregate. Pooled micro-averaged the signal is weak (AUROC 0.45 to 0.54), but per-pathway one-vs-rest reaches AUROC 0.67 to 0.68 on Terpenoids and Shikimates / Phenylpropanoids at top-27 to top-47 under low-intensity-exponent cosines, 0.64 on Polyketides under direct cosine with full intensity weighting, near 0.60 on Amino acids and Peptides and on Carbohydrates under NIST-style m/z weighting, and barely above chance on Alkaloids and Fatty acids. Open avenues we hope to address with collaborators (collected under Future work in the README) include m/z exponents below 1 and below 0, intensity exponents above 1.0 or below 0 to probe the low-intensity peak regime where diagnostic neutral losses live, repeated sampling of random class representatives so the pathway-classification numbers carry confidence intervals rather than a single deterministic estimate, and a mechanistic write-up of why certain similarity-and-peak-count combinations dominate on certain pathways, sorting biological chemotype patterns from instrument-dependent fragmentation behaviour. The Pathways tab below lets the reader pick a pathway and metric and toggle similarity-family, m/z, intensity, and entropy-weighting filters."
             }
         }
     }
