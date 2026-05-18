@@ -135,7 +135,7 @@ Per-config curves of the aggregate AUROC and AUPRC by retained peak count are wr
 
 The repo also ships a small Dioxus + WebAssembly viewer with two tabs. The Heatmaps tab renders the 8 metric heatmaps per config on demand in the browser, fetching a dataset's `distribution_grid.npz` (~9 MB) and re-using the same `plotters` pipeline as the CLI compiled to WASM. The Pathways tab renders AUROC / AUPRC / accuracy / MCC line plots from `pathway_discriminability_lines.json`, with filters for similarity family, m/z exponent, intensity exponent, and entropy weighting.
 
-The live build is deployed to GitHub Pages at [earth-metabolome-initiative.github.io/spectral-similarities-by-peaks](https://earth-metabolome-initiative.github.io/spectral-similarities-by-peaks/). For local-dev instructions (`dx serve`, the `wasm-release` profile, and the data-payload layout under `crates/web/public/data/`) see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+The live build is deployed at [topkpeaks.earthmetabolome.org](https://topkpeaks.earthmetabolome.org). For local-dev instructions (`dx serve`, the `wasm-release` profile, and the data-payload layout under `crates/web/public/data/`) see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Per-config diversity ranking
 

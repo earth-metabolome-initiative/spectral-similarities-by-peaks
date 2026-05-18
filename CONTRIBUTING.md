@@ -107,7 +107,7 @@ cargo install dioxus-cli --version 0.7.9 --locked  # one-off
 rustup target add wasm32-unknown-unknown            # one-off
 cd crates/web
 dx serve --profile wasm-release --platform web
-# open http://localhost:8080/spectral-similarities-by-peaks/
+# open http://localhost:8080/
 ```
 
 The `wasm-release` profile (defined in the workspace `Cargo.toml`) strips DWARF debug info before `wasm-opt` runs, sidestepping the `compile unit size was incorrect` SIGABRT seen with recent rustc + older binaryen builds.

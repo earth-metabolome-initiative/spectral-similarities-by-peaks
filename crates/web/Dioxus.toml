@@ -5,7 +5,9 @@ asset_dir = "public"
 
 [web.app]
 title = "Spectral similarity heatmaps"
-base_path = "/spectral-similarities-by-peaks/"
+# Custom domain (https://topkpeaks.earthmetabolome.org) serves the build
+# from the site root, so no base_path prefix is needed. The deploy workflow
+# drops a CNAME alongside the artifact to keep the domain pinned on every push.
 
 [web.watcher]
 watch_path = ["src", "public"]
