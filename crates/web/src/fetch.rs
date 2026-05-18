@@ -119,13 +119,7 @@ pub struct DistributionGrid {
 /// Returns a string error if the HTTP request or JSON deserialization fails.
 pub async fn load_manifest(base_url: &str) -> Result<Manifest, String> {
     let url = format!("{base_url}manifest.json");
-    let response = Request::get(&url)
-        .send()
-        .await
-        .map_err(|error| format!("GET {url}: {error}"))?;
-    if !response.ok() {
-        return Err(format!("GET {url}: HTTP {}", response.status()));
-    }
+    let response = expect_json_response(&url).await?;
     let manifest: Manifest = response
         .json()
         .await
@@ -139,13 +133,7 @@ pub async fn load_manifest(base_url: &str) -> Result<Manifest, String> {
 ///
 /// Returns a string error if the HTTP request or JSON deserialization fails.
 pub async fn load_configs(url: &str) -> Result<Vec<ConfigEntry>, String> {
-    let response = Request::get(url)
-        .send()
-        .await
-        .map_err(|error| format!("GET {url}: {error}"))?;
-    if !response.ok() {
-        return Err(format!("GET {url}: HTTP {}", response.status()));
-    }
+    let response = expect_json_response(url).await?;
     let mut configs: Vec<ConfigEntry> = response
         .json()
         .await
@@ -198,6 +186,22 @@ pub async fn load_grid(url: &str) -> Result<DistributionGrid, String> {
 ///
 /// Returns a string error if the HTTP request or JSON deserialization fails.
 pub async fn load_pathway_lines(url: &str) -> Result<PathwayLinesData, String> {
+    let response = expect_json_response(url).await?;
+    let data: PathwayLinesData = response
+        .json()
+        .await
+        .map_err(|error| format!("parsing {url}: {error}"))?;
+    Ok(data)
+}
+
+/// GET `url` and confirm the server actually returned JSON. dx serve and
+/// many static-site hosts answer unknown paths with `200 OK` plus an
+/// `index.html` body (an SPA-style fallback), which would otherwise
+/// surface as an opaque "expected value at line 1 column 1" further down
+/// the JSON parsing path. Returning early with a content-type-aware error
+/// here keeps the failure mode legible when the page is loaded from a
+/// stale URL that no longer matches the deployment root.
+async fn expect_json_response(url: &str) -> Result<gloo_net::http::Response, String> {
     let response = Request::get(url)
         .send()
         .await
@@ -205,9 +209,14 @@ pub async fn load_pathway_lines(url: &str) -> Result<PathwayLinesData, String> {
     if !response.ok() {
         return Err(format!("GET {url}: HTTP {}", response.status()));
     }
-    let data: PathwayLinesData = response
-        .json()
-        .await
-        .map_err(|error| format!("parsing {url}: {error}"))?;
-    Ok(data)
+    if let Some(content_type) = response.headers().get("content-type") {
+        let lowered = content_type.to_ascii_lowercase();
+        if !lowered.contains("json") {
+            return Err(format!(
+                "GET {url}: expected JSON response, server returned content-type \"{content_type}\" \
+                 (likely an SPA index.html fallback; reload from the site root)"
+            ));
+        }
+    }
+    Ok(response)
 }
