@@ -3,7 +3,7 @@
 //! The pure plotters-based rendering lives in the `spectral-render` crate so
 //! it can be shared with the browser viewer. This module keeps only the
 //! pieces that need filesystem access: the per-config orchestration loop
-//! over [`GridArrays`], SVG and PNG file writers, and a few helpers
+//! over [`crate::output::GridArrays`], SVG and PNG file writers, and a few helpers
 //! re-exported for other CLI modules.
 
 #![allow(

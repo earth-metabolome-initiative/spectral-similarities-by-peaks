@@ -7,7 +7,7 @@
 //!
 //! On boot the [`Viewer`](crate::Viewer) calls [`read`] once to obtain a
 //! [`UrlState`] used as the default for every `use_signal` initialiser. A
-//! `use_effect` then calls [`write`] on every signal change so the URL
+//! `use_effect` then calls [`write()`] on every signal change so the URL
 //! always reflects the current state.
 
 use std::collections::HashSet;
