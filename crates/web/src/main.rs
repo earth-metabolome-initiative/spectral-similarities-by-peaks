@@ -28,6 +28,16 @@ use crate::pathway_panel::{PathwayPanel, WeightedChoice, default_filter_state};
 
 const DATA_BASE_URL: &str = "data/";
 
+/// `dataset_resource`'s payload type. The leading `usize` is the
+/// `dataset_index` the fetch was kicked off for, so consumers can ignore
+/// the value while the user is mid-switch (i.e. when the resource still
+/// holds the previous dataset's response).
+type DatasetResource = Resource<Result<(usize, Vec<ConfigEntry>, DistributionGrid), String>>;
+
+/// `pathway_resource`'s payload type. Same `usize`-tagged shape so the
+/// pathway-classification panel can also gate its render on freshness.
+type PathwayResource = Resource<Result<(usize, PathwayLinesData), String>>;
+
 /// Axis of the heatmap value. Combined with [`ColorScale`] to produce one of
 /// the eight rendered metrics in [`spectral_render::Metric`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -649,7 +659,11 @@ fn Viewer(datasets: Vec<DatasetEntry>) -> Element {
                 .ok_or_else(|| "dataset index out of range".to_string())?;
             let configs = fetch::load_configs(&entry.configs_url).await?;
             let grid = fetch::load_grid(&entry.grid_url).await?;
-            Ok::<(Vec<ConfigEntry>, DistributionGrid), String>((configs, grid))
+            // Carrying `chosen` lets downstream consumers ignore the
+            // payload while the user is mid-switch (the resource value
+            // outlives the dataset_index change until the new fetch
+            // resolves).
+            Ok::<(usize, Vec<ConfigEntry>, DistributionGrid), String>((chosen, configs, grid))
         }
     });
 
@@ -665,7 +679,8 @@ fn Viewer(datasets: Vec<DatasetEntry>) -> Element {
                 .pathways_url
                 .as_ref()
                 .ok_or_else(|| "no pathways URL for this dataset".to_string())?;
-            fetch::load_pathway_lines(url).await
+            let data = fetch::load_pathway_lines(url).await?;
+            Ok::<(usize, PathwayLinesData), String>((chosen, data))
         }
     });
 
@@ -756,6 +771,7 @@ fn Viewer(datasets: Vec<DatasetEntry>) -> Element {
                 PathwayPanel {
                     pathways_url: pathways_url_for_panel.clone(),
                     pathway_resource,
+                    dataset_index,
                     pathway_index,
                     metric: pathway_metric,
                     families: pathway_families,
@@ -779,8 +795,8 @@ fn ConfigurationPanel(
     alpha_milli: Signal<u32>,
     d_centi: Signal<u32>,
     active_key: Signal<Option<ConfigKey>>,
-    dataset_resource: Resource<Result<(Vec<ConfigEntry>, DistributionGrid), String>>,
-    pathway_resource: Resource<Result<PathwayLinesData, String>>,
+    dataset_resource: DatasetResource,
+    pathway_resource: PathwayResource,
     pathway_metric: Signal<PathwayMetric>,
     pathway_index: Signal<usize>,
     pathway_families: Signal<HashSet<Family>>,
@@ -789,14 +805,22 @@ fn ConfigurationPanel(
     pathway_weighted: Signal<HashSet<WeightedChoice>>,
     pending_pathway_label: Signal<Option<String>>,
 ) -> Element {
+    let current_idx = dataset_index();
     let configs_state = dataset_resource.read_unchecked();
+    // Only build the catalog when the resource payload corresponds to the
+    // currently selected dataset. While the user is mid-switch the resource
+    // still holds the previous dataset's configs, and seeding `active_key`
+    // from them would point the heatmap at the old config under a new
+    // dataset label (the "needs two clicks to switch" bug).
     let catalog: Option<Rc<ConfigCatalog>> = match &*configs_state {
-        Some(Ok((configs, _))) => Some(Rc::new(ConfigCatalog::new(
-            &configs
-                .iter()
-                .map(|c| (c.config_index, c.config.clone()))
-                .collect::<Vec<_>>(),
-        ))),
+        Some(Ok((fetched_idx, configs, _))) if *fetched_idx == current_idx => {
+            Some(Rc::new(ConfigCatalog::new(
+                &configs
+                    .iter()
+                    .map(|c| (c.config_index, c.config.clone()))
+                    .collect::<Vec<_>>(),
+            )))
+        }
         _ => None,
     };
 
@@ -811,30 +835,34 @@ fn ConfigurationPanel(
     }
 
     let dataset_has_pathways = datasets
-        .get(dataset_index())
+        .get(current_idx)
         .map(|entry| entry.pathways_url.is_some())
         .unwrap_or(false);
 
     // Once the pathway JSON arrives, seed every filter set with every
     // value seen in the data so the default is "all on", and resolve any
     // pending URL-derived pathway label into a concrete `pathway_index`.
+    // Same guard as above: only act when the payload matches the active
+    // dataset.
     let pathway_state = pathway_resource.read_unchecked();
-    if let Some(Ok(data)) = &*pathway_state {
-        if pathway_families.read().is_empty() {
-            let (fams, mz, ints, weighted) = default_filter_state(data);
-            pathway_families.clone().set(fams);
-            pathway_mz_keys.clone().set(mz);
-            pathway_int_keys.clone().set(ints);
-            pathway_weighted.clone().set(weighted);
-        }
-        if let Some(label) = pending_pathway_label.read().clone() {
-            if let Some(idx) = data.pathways.iter().position(|p| p.label == label) {
-                if pathway_index() != idx {
-                    pathway_index.clone().set(idx);
-                }
+    if let Some(Ok((fetched_idx, data))) = &*pathway_state {
+        if *fetched_idx == current_idx {
+            if pathway_families.read().is_empty() {
+                let (fams, mz, ints, weighted) = default_filter_state(data);
+                pathway_families.clone().set(fams);
+                pathway_mz_keys.clone().set(mz);
+                pathway_int_keys.clone().set(ints);
+                pathway_weighted.clone().set(weighted);
             }
-        } else if let Some(entry) = data.pathways.get(pathway_index()) {
-            pending_pathway_label.clone().set(Some(entry.label.clone()));
+            if let Some(label) = pending_pathway_label.read().clone() {
+                if let Some(idx) = data.pathways.iter().position(|p| p.label == label) {
+                    if pathway_index() != idx {
+                        pathway_index.clone().set(idx);
+                    }
+                }
+            } else if let Some(entry) = data.pathways.get(pathway_index()) {
+                pending_pathway_label.clone().set(Some(entry.label.clone()));
+            }
         }
     }
 
@@ -919,6 +947,7 @@ fn ConfigurationPanel(
             if active_tab() == ViewerTab::Pathways {
                 PathwayConfigSection {
                     pathway_resource,
+                    dataset_index,
                     pathway_metric,
                     pathway_index,
                     pathway_families,
@@ -946,7 +975,8 @@ fn ConfigurationPanel(
 #[component]
 #[allow(non_snake_case, clippy::too_many_arguments)]
 fn PathwayConfigSection(
-    pathway_resource: Resource<Result<PathwayLinesData, String>>,
+    pathway_resource: PathwayResource,
+    dataset_index: Signal<usize>,
     pathway_metric: Signal<PathwayMetric>,
     pathway_index: Signal<usize>,
     pathway_families: Signal<HashSet<Family>>,
@@ -955,10 +985,14 @@ fn PathwayConfigSection(
     pathway_weighted: Signal<HashSet<WeightedChoice>>,
     pending_pathway_label: Signal<Option<String>>,
 ) -> Element {
+    let current_idx = dataset_index();
     let state = pathway_resource.read_unchecked();
     let data = match &*state {
-        Some(Ok(data)) => data.clone(),
-        Some(Err(_)) | None => {
+        // Hold the previous dataset's payload back while a new fetch is
+        // mid-flight so the filter pills don't briefly re-render against
+        // stale configs.
+        Some(Ok((fetched_idx, data))) if *fetched_idx == current_idx => data.clone(),
+        _ => {
             return rsx! {
                 p { class: "loading", "Loading pathway data…" }
             };
@@ -1609,10 +1643,11 @@ fn HeatmapPanel(
     alpha_milli: Signal<u32>,
     d_centi: Signal<u32>,
     active_key: Signal<Option<ConfigKey>>,
-    dataset_resource: Resource<Result<(Vec<ConfigEntry>, DistributionGrid), String>>,
+    dataset_resource: DatasetResource,
 ) -> Element {
+    let current_idx = dataset_index();
     let dataset_label = datasets
-        .get(dataset_index())
+        .get(current_idx)
         .map(|d| d.label.clone())
         .unwrap_or_default();
     let state = dataset_resource.read_unchecked();
@@ -1625,7 +1660,10 @@ fn HeatmapPanel(
                 h2 { class: "panel-title", "Heatmap" }
             }
             match &*state {
-                Some(Ok((configs, grid))) => rsx! {
+                // Hold the previous dataset's heatmap back while the new
+                // fetch is still in flight so the figure never appears
+                // under a mismatched dataset label.
+                Some(Ok((fetched_idx, configs, grid))) if *fetched_idx == current_idx => rsx! {
                     HeatmapBody {
                         configs: configs.clone(),
                         grid: Rc::new(GridBundle::from(grid)),
@@ -1640,7 +1678,7 @@ fn HeatmapPanel(
                 Some(Err(error)) => rsx! {
                     p { class: "error", "Failed to load dataset: {error}" }
                 },
-                None => rsx! { p { class: "loading", "Loading dataset…" } },
+                _ => rsx! { p { class: "loading", "Loading dataset…" } },
             }
         }
     }

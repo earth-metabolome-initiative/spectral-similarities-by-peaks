@@ -20,6 +20,11 @@ use crate::config_key::{ExpKey, Family};
 use crate::fetch::{PathwayConfigEntry, PathwayLinesData};
 use crate::responsive_svg;
 
+/// Shape of the WASM-side pathway-discriminability resource. The leading
+/// `usize` is the `dataset_index` the fetch ran for, mirrored from
+/// `crate::PathwayResource`.
+type TaggedPathwayResource = Resource<Result<(usize, PathwayLinesData), String>>;
+
 /// Choice for the `weighted` filter pill row: every per-class series has a
 /// known `Option<bool>` flag and a config that lacks the flag entirely.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -271,7 +276,8 @@ fn filter_keeps(
 #[allow(non_snake_case, clippy::too_many_arguments)]
 pub fn PathwayPanel(
     pathways_url: Option<String>,
-    pathway_resource: Resource<Result<PathwayLinesData, String>>,
+    pathway_resource: TaggedPathwayResource,
+    dataset_index: Signal<usize>,
     pathway_index: Signal<usize>,
     metric: Signal<PathwayMetric>,
     families: Signal<HashSet<Family>>,
@@ -291,9 +297,21 @@ pub fn PathwayPanel(
             }
         };
     }
+    let current_idx = dataset_index();
     let state = pathway_resource.read_unchecked();
     let data = match &*state {
-        Some(Ok(data)) => data.clone(),
+        // Resource value can outlive a dataset_index change while the
+        // new fetch is in flight. Treat that intermediate window as
+        // "still loading" instead of rendering the previous dataset's
+        // pathway plot under the new dataset label.
+        Some(Ok((fetched_idx, data))) if *fetched_idx == current_idx => data.clone(),
+        Some(Ok(_)) | None => {
+            return rsx! {
+                section { class: "panel panel-figure",
+                    p { class: "loading", "Loading pathway data…" }
+                }
+            };
+        }
         Some(Err(err)) => {
             let message = err.clone();
             return rsx! {
@@ -304,13 +322,6 @@ pub fn PathwayPanel(
                         }
                         "Could not load pathway data: {message}"
                     }
-                }
-            };
-        }
-        None => {
-            return rsx! {
-                section { class: "panel panel-figure",
-                    p { class: "loading", "Loading pathway data…" }
                 }
             };
         }
