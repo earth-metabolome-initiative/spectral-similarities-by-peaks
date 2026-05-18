@@ -66,6 +66,10 @@ fn full_scan_smoke_test_produces_expected_artifacts() -> Result<(), Box<dyn Erro
     run::run(cli)?;
     assert_pathway_discriminability_artifacts(&output_dir)?;
 
+    let cli = smoke_export_pathway_discriminability_json_cli(&output_dir)?;
+    run::run(cli)?;
+    assert_pathway_discriminability_json(&output_dir)?;
+
     fs::remove_dir_all(root)?;
     Ok(())
 }
@@ -345,6 +349,20 @@ fn smoke_render_pathway_discriminability_cli(output_dir: &Path) -> Result<Cli, B
     Ok(Cli::try_parse_from([
         "spectral-similarities-by-peaks",
         "render-pathway-discriminability",
+        "--output-dir",
+        output_dir
+            .to_str()
+            .ok_or("temporary output directory path is not valid UTF-8")?,
+    ])?)
+}
+
+/// Build the synthetic export-pathway-discriminability-json command used by the smoke test.
+fn smoke_export_pathway_discriminability_json_cli(
+    output_dir: &Path,
+) -> Result<Cli, Box<dyn Error>> {
+    Ok(Cli::try_parse_from([
+        "spectral-similarities-by-peaks",
+        "export-pathway-discriminability-json",
         "--output-dir",
         output_dir
             .to_str()
@@ -978,6 +996,40 @@ fn assert_pathway_discriminability_artifacts(output_dir: &Path) -> Result<(), Bo
         assert_svg_artifact(&stem.with_extension("svg"))?;
         assert_png_artifact(&stem.with_extension("png"))?;
     }
+    Ok(())
+}
+
+/// Assert that `pathway_discriminability_lines.json` is present and that
+/// its top-level shape matches the contract consumed by the WASM viewer.
+fn assert_pathway_discriminability_json(output_dir: &Path) -> Result<(), Box<dyn Error>> {
+    let path = output_dir.join("pathway_discriminability_lines.json");
+    let text = fs::read_to_string(&path)?;
+    let document: serde_json::Value = serde_json::from_str(&text)?;
+    let object = document
+        .as_object()
+        .ok_or("pathway_discriminability_lines.json root is not an object")?;
+    for key in ["peak_counts", "configs", "pathways"] {
+        assert!(
+            object.contains_key(key),
+            "missing top-level key `{key}` in {}",
+            path.display()
+        );
+    }
+    let pathways = object["pathways"]
+        .as_array()
+        .ok_or("`pathways` is not a JSON array")?;
+    let first = pathways
+        .first()
+        .ok_or("`pathways` array is empty")?
+        .as_object()
+        .ok_or("first `pathways` entry is not a JSON object")?;
+    let label = first["label"]
+        .as_str()
+        .ok_or("first `pathways` entry has no string `label`")?;
+    assert_eq!(
+        label, "Aggregate (micro-averaged)",
+        "first pathway entry should be the aggregate micro-averaged classifier"
+    );
     Ok(())
 }
 
