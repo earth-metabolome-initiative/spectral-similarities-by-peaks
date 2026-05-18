@@ -549,7 +549,7 @@ fn Hero() -> Element {
                     rel: "noopener noreferrer",
                     "Lindley's-paradox"
                 }
-                " territory and the figures rely on the sample-size-invariant D statistic. A second axis classifies pathway pairs by AUROC, AUPRC, accuracy, and Matthews correlation coefficient per (config, pathway, retained-peak-count) cell, with a pair positive when the candidate spectrum's "
+                " territory and the figures rely on the sample-size-invariant D statistic. A second line of inquiry scores pathway pairs by AUROC, AUPRC, accuracy, and Matthews correlation coefficient per (config, pathway, retained-peak-count) cell, with a pair positive when the candidate spectrum's "
                 a {
                     href: "https://doi.org/10.1186/s13321-022-00624-5",
                     target: "_blank",
