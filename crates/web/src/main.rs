@@ -395,7 +395,18 @@ const fn combine_metric(kind: MetricKind, scale: ColorScale) -> Metric {
     }
 }
 
-const FONTS_HREF: &str = "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;700&family=Syne:wght@700&display=swap";
+/// Main stylesheet, baked into the index.html `<head>` at build time so the
+/// browser fetches it in parallel with the WASM blob and the first paint is
+/// already styled. The `with_static_head(true)` option asks the dx CLI to
+/// emit a `<link rel="stylesheet">` directly into the page template instead
+/// of injecting it from the runtime DOM effect that fires after WASM boots
+/// (the runtime path is what caused the unstyled flash). The Google Fonts
+/// `<link>` lives in `crates/web/index.html` for the same reason.
+#[allow(clippy::volatile_composites)]
+static MAIN_CSS: Asset = asset!(
+    "/assets/style.css",
+    AssetOptions::css().with_static_head(true)
+);
 
 fn main() {
     console_error_panic_hook::set_once();
@@ -408,8 +419,11 @@ fn App() -> Element {
     let manifest = use_resource(|| async move { fetch::load_manifest(DATA_BASE_URL).await });
 
     rsx! {
-        document::Stylesheet { href: FONTS_HREF }
-        document::Stylesheet { href: "style.css" }
+        // Touching MAIN_CSS keeps the asset reachable from the rsx tree so
+        // the dx CLI walks it during the asset-collection pass. The static
+        // head injection is what actually puts the <link> on the page,
+        // before WASM ever loads, so this evaluates to no observable DOM.
+        document::Stylesheet { href: MAIN_CSS }
 
         main { class: "page",
             Hero {}
