@@ -860,6 +860,7 @@ fn ConfigurationPanel(
                 div { class: "pill-row",
                     for (i, entry) in datasets.iter().enumerate() {
                         Pill {
+                            key: "{entry.slug}",
                             label: entry.label.clone(),
                             active: dataset_index() == i,
                             disabled: false,
@@ -896,6 +897,7 @@ fn ConfigurationPanel(
                 div { class: "pill-row",
                     for (tab, label) in ViewerTab::ALL {
                         Pill {
+                            key: "{tab.slug()}",
                             label: label.to_string(),
                             active: active_tab() == tab,
                             disabled: matches!(tab, ViewerTab::Pathways) && !dataset_has_pathways,
@@ -1033,6 +1035,7 @@ fn PathwayConfigSection(
             div { class: "pill-row",
                 for (metric, label, description) in metric_options {
                     Pill {
+                        key: "{label}",
                         label: label.to_string(),
                         active: pathway_metric() == metric,
                         disabled: !metric_supported(metric),
@@ -1057,6 +1060,7 @@ fn PathwayConfigSection(
             div { class: "pill-row",
                 for (idx, entry) in data.pathways.iter().enumerate() {
                     Pill {
+                        key: "{entry.label}",
                         label: entry.label.clone(),
                         active: pathway_index() == idx,
                         disabled: false,
@@ -1099,6 +1103,7 @@ fn PathwayConfigSection(
             div { class: "pill-row",
                 for family in available_families.iter().copied() {
                     Pill {
+                        key: "{family.label()}",
                         label: family.label().to_string(),
                         active: pathway_families.read().contains(&family),
                         disabled: false,
@@ -1131,6 +1136,7 @@ fn PathwayConfigSection(
             div { class: "pill-row",
                 for mz in available_mz.iter().copied() {
                     Pill {
+                        key: "mz-{mz}",
                         label: format!("{mz:.1}"),
                         active: pathway_mz_keys.read().contains(&ExpKey::from_f64(mz)),
                         disabled: false,
@@ -1164,6 +1170,7 @@ fn PathwayConfigSection(
             div { class: "pill-row",
                 for intensity in available_int.iter().copied() {
                     Pill {
+                        key: "int-{intensity}",
                         label: format!("{intensity:.2}"),
                         active: pathway_int_keys.read().contains(&ExpKey::from_f64(intensity)),
                         disabled: false,
@@ -1200,6 +1207,7 @@ fn PathwayConfigSection(
                         let choice = WeightedChoice::from_optional(value);
                         rsx! {
                             Pill {
+                                key: "{choice.label()}",
                                 label: choice.label().to_string(),
                                 active: pathway_weighted.read().contains(&choice),
                                 disabled: false,
@@ -1410,6 +1418,7 @@ fn ConfigSelector(catalog: Rc<ConfigCatalog>, active_key: Signal<Option<ConfigKe
             div { class: "pill-row",
                 for family in Family::ALL {
                     Pill {
+                        key: "{family.label()}",
                         label: family.label().to_string(),
                         active: current.family == family,
                         disabled: !available_families.contains(&family),
@@ -1437,6 +1446,7 @@ fn ConfigSelector(catalog: Rc<ConfigCatalog>, active_key: Signal<Option<ConfigKe
             div { class: "pill-row",
                 for mz in mz_options.iter().copied() {
                     Pill {
+                        key: "{mz.label()}",
                         label: mz.label(),
                         active: current.mz_exp == mz,
                         disabled: false,
@@ -1464,6 +1474,7 @@ fn ConfigSelector(catalog: Rc<ConfigCatalog>, active_key: Signal<Option<ConfigKe
             div { class: "pill-row",
                 for int_exp in int_options.iter().copied() {
                     Pill {
+                        key: "{int_exp.label()}",
                         label: int_exp.label(),
                         active: current.int_exp == int_exp,
                         disabled: false,
