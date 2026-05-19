@@ -1719,7 +1719,11 @@ fn HeatmapPanel(
         .unwrap_or_default();
     let state = dataset_resource.read_unchecked();
     rsx! {
-        section { class: "panel",
+        // `panel-figure` makes the section a positioned ancestor so the
+        // `.figure-actions` toolbar (SVG download pill) can be placed at
+        // the top-right corner via `position: absolute`. Without it the
+        // toolbar floats out of the panel and is effectively hidden.
+        section { class: "panel panel-figure",
             div { class: "panel-head",
                 span { aria_hidden: "true",
                     Icon { width: 18, height: 18, icon: FaChartArea, class: "panel-icon" }
