@@ -119,7 +119,7 @@ The micro-averaged view hides a much stronger per-pathway signal. Splitting the 
 | Alkaloids | modified-cosine | 0.0 | 0.25 | - | 0.1561 | 1 |
 | Fatty acids | cosine | 1.0 | 0.50 | - | 0.1428 | 2 |
 
-The optimal `(family, m/z, intensity)` rotates almost completely across pathways. Terpenoids and Shikimates/Phenylpropanoids prefer low-intensity-exponent direct or modified cosine and reach their plateau at top-27 to top-47. Polyketides keep improving all the way to the full top-128 on direct cosine with no intensity flattening. Amino-acids-and-Peptides and Carbohydrates lean on the NIST-style weighting (`mz = 3.0`, `int = 0.6`) and also benefit from large peak counts. Alkaloids and Fatty acids barely separate at all, and their best operating point lands at top-1 or top-2. A top-N model is the wrong shape for those classes. The one-vs-rest plots under `pathway_discriminability_plots/per_class/<pathway>/{auroc,auprc}.{svg,png}` show the full curves.
+The optimal `(family, m/z, intensity)` rotates almost completely across pathways. Terpenoids and Shikimates/Phenylpropanoids prefer low-intensity-exponent direct or modified cosine and reach their plateau at top-27 to top-47. Polyketides keep improving all the way to the full top-128 on direct cosine with no intensity flattening. Amino-acids-and-Peptides and Carbohydrates lean on the NIST-style weighting (`mz = 3.0`, `int = 0.6`) and also benefit from large peak counts. Alkaloids and Fatty acids barely separate at all, and their best operating point lands at top-1 or top-2. A top-N model is the wrong shape for those classes.
 
 ### What consistently does not work
 
@@ -139,16 +139,11 @@ The live build is deployed at [topkpeaks.earthmetabolome.org](https://topkpeaks.
 
 The `compute-config-diversity` subcommand reduces a finished scan's `distribution_grid.npz` to a single number per similarity configuration: the mean of the Kolmogorov-Smirnov statistic (`D`) across every off-diagonal cell of the 128 by 128 grid. Larger mean `D` means the score distributions shift more across peak counts.
 
-```bash
-target/release/spectral-similarities-by-peaks compute-config-diversity \
-  --output-dir results/harmonized-full
-```
-
 The table also reports the peak count at which each KS-statistic contour (`D = 0.10`, `0.05`, `0.01`) reaches its right-edge asymptote, i.e., the smallest retained-peak count above which the similarity-score CDF differs from the full-peak CDF by less than that threshold. `D = 0.10` is the data-drift literature's "small/moderate" boundary, `D = 0.05` the "negligible/small" boundary, and `D = 0.01` a tighter reference for near-identical distributions.
 
 ### GeMS-sampled
 
-This dataset uses a 100 000-query sample searched against a 1 000 000-reference sample, both drawn from the full ~22 M-spectrum GeMS-A10 corpus (`ROW_SAMPLE_SIZE=100000`, `REFERENCE_SAMPLE_SIZE=1000000` in `slurm/lrc/submit.sh`). With 64 nearest neighbors per query that yields ~6.4 M similarity-score samples per `(config, peak_count)` cell (verified against `distribution_summary.parquet`: min 6 282 680, max 6 400 000, mean 6 399 398). Mean off-diagonal `D` ranges from 0.021 to 0.113.
+This dataset uses a 100 000-query sample searched against a 1 000 000-reference sample, both drawn from the full ~22 M-spectrum GeMS-A10 corpus (`ROW_SAMPLE_SIZE=100000`, `REFERENCE_SAMPLE_SIZE=1000000` in `slurm/lrc/submit.sh`). With 64 nearest neighbors per query that yields ~6.4 M similarity-score samples per `(config, peak_count)` cell. Mean off-diagonal `D` ranges from 0.021 to 0.113.
 
 | Rank | Family | m/z | Intensity | Weighted | mean D | stddev D | D = 0.10 peak | D = 0.05 peak | D = 0.01 peak |
 | ---: | --- | ---: | ---: | :---: | ---: | ---: | ---: | ---: | ---: |
@@ -175,7 +170,7 @@ The intensity exponent drives most of the ranking. The four `intensity^0.25` con
 
 ### harmonized-full
 
-This is the harmonized annotated MS2 dataset with no query sampling, no reference sampling, and full top-128 truncation. All 443 905 query spectra are searched against the same pool with 64 neighbors per query, yielding ~28.4 M similarity-score samples per `(config, peak_count)` cell (verified against `distribution_summary.parquet`: min 26 847 500, max 28 409 829, mean 28 395 138, about 4.4x the GeMS-sampled per-cell count). The larger sample yields smoother per-peak-count CDFs, and `mean D` drops to the 0.020-0.063 range.
+This is the harmonized annotated MS2 dataset with no query sampling, no reference sampling, and full top-128 truncation. All 443 905 query spectra are searched against the same pool with 64 neighbors per query, yielding ~28.4 M similarity-score samples per `(config, peak_count)` cell (about 4.4x the GeMS-sampled per-cell count). The larger sample yields smoother per-peak-count CDFs, and `mean D` drops to the 0.020-0.063 range.
 
 | Rank | Family | m/z | Intensity | Weighted | mean D | stddev D | D = 0.10 peak | D = 0.05 peak | D = 0.01 peak |
 | ---: | --- | ---: | ---: | :---: | ---: | ---: | ---: | ---: | ---: |
