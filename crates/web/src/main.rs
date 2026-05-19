@@ -19,7 +19,7 @@ use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::fa_brands_icons::FaGithub;
 use dioxus_free_icons::icons::fa_solid_icons::{
-    FaChartArea, FaCircleInfo, FaDatabase, FaDownload, FaHandshake, FaSliders, FaWaveSquare,
+    FaChartArea, FaCircleInfo, FaDownload, FaHandshake, FaSliders, FaWaveSquare,
 };
 use spectral_render::{GridViews, Metric, PathwayMetric, Scales, render_cell_svg};
 
@@ -1900,14 +1900,6 @@ fn HeatmapBody(
             },
         }
     }
-}
-
-#[allow(dead_code, clippy::missing_const_for_fn)]
-fn _silence_database_icon_unused() {
-    // The `FaDatabase` import is kept for future dataset rows but isn't on
-    // a render path yet; this no-op makes clippy's `unused_imports` happy
-    // without burning a `#[allow]` on the top-level import.
-    let _ = FaDatabase;
 }
 
 #[cfg(test)]
