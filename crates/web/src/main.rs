@@ -323,7 +323,9 @@ pub fn caption_to_html(caption: &str) -> String {
         .map_or((caption, ""), |idx| caption.split_at(idx + 1));
 
     // Order matters: longer / compound tokens must be replaced before the
-    // shorter ones they contain (e.g. "near-white" before "white").
+    // shorter ones they contain (e.g. "near-white" before "white"). The
+    // replacement honours word boundaries so substrings like "red" inside
+    // "predicted" do not get coloured.
     let color_words: &[(&str, &str)] = &[
         ("near-white", "#6b6b6b"),
         ("yellow", "#b08400"),
@@ -336,9 +338,45 @@ pub fn caption_to_html(caption: &str) -> String {
     let mut rest_html = rest.to_string();
     for (word, color) in color_words {
         let replacement = format!("<strong style=\"color: {color};\">{word}</strong>");
-        rest_html = rest_html.replace(word, &replacement);
+        rest_html = replace_word_boundary(&rest_html, word, &replacement);
     }
     format!("<strong>{title}</strong>{rest_html}")
+}
+
+/// Replace every word-boundary-bounded occurrence of `needle` in `haystack`
+/// with `replacement`. An occurrence is considered "bounded" when neither
+/// the character immediately before nor the character immediately after is
+/// alphanumeric, `_`, or `-`. This is what stops a literal color word like
+/// "red" from being recoloured inside "p**red**icted".
+fn replace_word_boundary(haystack: &str, needle: &str, replacement: &str) -> String {
+    if needle.is_empty() {
+        return haystack.to_string();
+    }
+    let is_word_char = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
+    let mut out = String::with_capacity(haystack.len());
+    let mut last_end = 0;
+    let mut search_start = 0;
+    while let Some(rel_idx) = haystack[search_start..].find(needle) {
+        let idx = search_start + rel_idx;
+        let prev_is_word = haystack[..idx]
+            .chars()
+            .next_back()
+            .is_some_and(is_word_char);
+        let next_is_word = haystack[idx + needle.len()..]
+            .chars()
+            .next()
+            .is_some_and(is_word_char);
+        out.push_str(&haystack[last_end..idx]);
+        if prev_is_word || next_is_word {
+            out.push_str(needle);
+        } else {
+            out.push_str(replacement);
+        }
+        last_end = idx + needle.len();
+        search_start = last_end;
+    }
+    out.push_str(&haystack[last_end..]);
+    out
 }
 
 /// Format an α / D threshold value compactly for inline mention.
@@ -1848,4 +1886,36 @@ fn _silence_database_icon_unused() {
     // a render path yet; this no-op makes clippy's `unused_imports` happy
     // without burning a `#[allow]` on the top-level import.
     let _ = FaDatabase;
+}
+
+#[cfg(test)]
+mod caption_tests {
+    use super::caption_to_html;
+
+    #[test]
+    fn coloring_respects_word_boundaries() {
+        let caption =
+            "Caption title here. It is the share of queries whose predicted-pathway matches.";
+        let html = caption_to_html(caption);
+        // The literal color word "red" sits inside "predicted-pathway" and
+        // must not be wrapped in a coloured span.
+        assert!(
+            !html.contains("p<strong style=\"color: #9d4133;\">red</strong>icted"),
+            "should not colour the `red` substring inside `predicted`: {html}"
+        );
+    }
+
+    #[test]
+    fn coloring_still_applies_to_standalone_color_words() {
+        let caption = "Title here. The dashed coral curve traces α and the cyan curve traces D.";
+        let html = caption_to_html(caption);
+        assert!(
+            html.contains("<strong style=\"color: #c84766;\">coral</strong>"),
+            "expected coral to be coloured: {html}"
+        );
+        assert!(
+            html.contains("<strong style=\"color: #2b85ac;\">cyan</strong>"),
+            "expected cyan to be coloured: {html}"
+        );
+    }
 }
