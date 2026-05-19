@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <!-- Anchor every relative URL to the site root. The viewer fetches
+             data/manifest.json (and the data/ files it references) with a
+             relative path. Without this base element, a visitor landing on
+             /something-deep/ would have those fetches resolved against
+             /something-deep/, miss, then receive the dx serve / GitHub
+             Pages SPA fallback (index.html with HTTP 200) and the JSON
+             parser would choke on the HTML body. -->
+        <base href="/">
+        <title>{app_title}</title>
+        <meta content="text/html;charset=utf-8" http-equiv="Content-Type">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta charset="UTF-8">
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;700&family=Syne:wght@700&display=swap">
+    </head>
+    <body>
+        <div id="main"></div>
+    </body>
+</html>

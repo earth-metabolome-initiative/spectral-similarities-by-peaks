@@ -17,8 +17,9 @@ use rayon::prelude::*;
 use crate::{
     checkpoint::{self, CheckpointBase, RunFingerprint},
     cli::{
-        Cli, Commands, FinalizeMergeArgs, FinalizeScanArgs, FinalizeShardArgs, PrefetchArgs,
-        RenderHeatmapArgs, RenderPathwayArtifactArgs, ScanArgs, ScanShardArgs,
+        Cli, Commands, ExportPathwayDiscriminabilityJsonArgs, FinalizeMergeArgs, FinalizeScanArgs,
+        FinalizeShardArgs, PrefetchArgs, RenderHeatmapArgs, RenderPathwayArtifactArgs,
+        RenderPathwayDiscriminabilityArgs, ScanArgs, ScanShardArgs,
     },
     data::{self, load_dataset_records, load_records},
     distribution::{
@@ -59,6 +60,10 @@ pub fn run(cli: Cli) -> Result<()> {
         Commands::RenderPathwayArtifacts(args) => run_render_pathway_artifacts(&args),
         Commands::ComputePathwayDiscriminability(args) => {
             run_compute_pathway_discriminability(&args)
+        }
+        Commands::RenderPathwayDiscriminability(args) => run_render_pathway_discriminability(&args),
+        Commands::ExportPathwayDiscriminabilityJson(args) => {
+            run_export_pathway_discriminability_json(&args)
         }
         Commands::ComputeConfigDiversity(args) => run_compute_config_diversity(&args),
         Commands::ReEncodeParquets(args) => run_re_encode_parquets(&args),
@@ -106,7 +111,33 @@ fn run_compute_pathway_discriminability(
     args: &crate::cli::ComputePathwayDiscriminabilityArgs,
 ) -> Result<()> {
     let progress = ScanProgress::new();
-    crate::pathway_discriminability::write_pathway_discriminability(&args.output_dir, &progress)
+    crate::pathway_discriminability::write_pathway_discriminability(
+        &args.output_dir,
+        args.from_merged,
+        &progress,
+    )
+}
+
+/// Render AUROC / AUPRC line plots from `pathway_discriminability.parquet`.
+fn run_render_pathway_discriminability(args: &RenderPathwayDiscriminabilityArgs) -> Result<()> {
+    let progress = ScanProgress::new();
+    crate::pathway_discriminability_plots::write_pathway_discriminability_plots(
+        &args.output_dir,
+        &progress,
+    )
+}
+
+/// Read the aggregate and per-class pathway-discriminability parquets and
+/// emit the compact `pathway_discriminability_lines.json` consumed by the
+/// WASM viewer.
+fn run_export_pathway_discriminability_json(
+    args: &ExportPathwayDiscriminabilityJsonArgs,
+) -> Result<()> {
+    let progress = ScanProgress::new();
+    crate::pathway_discriminability_export::export_pathway_discriminability_json(
+        &args.output_dir,
+        &progress,
+    )
 }
 
 /// Compute per-config mean KS statistic and rank configs by "diversity".
@@ -1570,6 +1601,8 @@ mod tests {
             | Commands::RenderHeatmaps(_)
             | Commands::RenderPathwayArtifacts(_)
             | Commands::ComputePathwayDiscriminability(_)
+            | Commands::RenderPathwayDiscriminability(_)
+            | Commands::ExportPathwayDiscriminabilityJson(_)
             | Commands::ComputeConfigDiversity(_)
             | Commands::ReEncodeParquets(_) => {
                 anyhow::bail!("expected scan command")
@@ -1609,6 +1642,8 @@ mod tests {
             | Commands::RenderHeatmaps(_)
             | Commands::RenderPathwayArtifacts(_)
             | Commands::ComputePathwayDiscriminability(_)
+            | Commands::RenderPathwayDiscriminability(_)
+            | Commands::ExportPathwayDiscriminabilityJson(_)
             | Commands::ComputeConfigDiversity(_)
             | Commands::ReEncodeParquets(_) => {
                 anyhow::bail!("expected scan-shard command")
@@ -1655,6 +1690,8 @@ mod tests {
             | Commands::RenderHeatmaps(_)
             | Commands::RenderPathwayArtifacts(_)
             | Commands::ComputePathwayDiscriminability(_)
+            | Commands::RenderPathwayDiscriminability(_)
+            | Commands::ExportPathwayDiscriminabilityJson(_)
             | Commands::ComputeConfigDiversity(_)
             | Commands::ReEncodeParquets(_) => {
                 anyhow::bail!("expected scan-shard command")

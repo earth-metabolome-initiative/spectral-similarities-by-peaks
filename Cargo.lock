@@ -3978,6 +3978,7 @@ dependencies = [
  "rand_chacha 0.10.0",
  "rayon",
  "serde",
+ "serde_json",
  "spectral-render",
  "tokio",
  "zstd",
@@ -3996,7 +3997,9 @@ dependencies = [
  "serde",
  "serde_json",
  "spectral-render",
+ "wasm-bindgen",
  "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

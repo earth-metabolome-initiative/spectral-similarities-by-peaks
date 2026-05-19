@@ -13,6 +13,13 @@
     clippy::cast_sign_loss
 )]
 
+pub mod pathway_lines;
+
+pub use pathway_lines::{
+    PathwayFamily, PathwayLineSeries, PathwayMetric, draw_pathway_lines,
+    focused_y_range_for_metric, pretty_series_label, render_pathway_lines_svg,
+};
+
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::OnceLock;
 

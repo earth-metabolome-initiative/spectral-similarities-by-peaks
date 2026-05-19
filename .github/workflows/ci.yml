@@ -30,6 +30,7 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
           rustup default stable
+          rustup target add wasm32-unknown-unknown
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -55,6 +56,12 @@ jobs:
 
       - name: Check
         run: cargo check --locked
+
+      - name: Check (wasm32 render)
+        run: cargo check --locked -p spectral-render --target wasm32-unknown-unknown
+
+      - name: Check (wasm32 web)
+        run: cargo check --locked -p spectral-web --target wasm32-unknown-unknown
 
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings

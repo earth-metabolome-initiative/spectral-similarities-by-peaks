@@ -59,6 +59,11 @@ pub enum Commands {
     RenderPathwayArtifacts(RenderPathwayArtifactArgs),
     /// Compute per-config AUROC / AUPRC of pathway-pair similarity scores.
     ComputePathwayDiscriminability(ComputePathwayDiscriminabilityArgs),
+    /// Render AUROC / AUPRC line plots from `pathway_discriminability.parquet`.
+    RenderPathwayDiscriminability(RenderPathwayDiscriminabilityArgs),
+    /// Export pathway-discriminability parquets as a compact JSON file for
+    /// the WASM viewer.
+    ExportPathwayDiscriminabilityJson(ExportPathwayDiscriminabilityJsonArgs),
     /// Rank similarity configs by the mean KS statistic of their distribution grid.
     ComputeConfigDiversity(ComputeConfigDiversityArgs),
     /// Rewrite every `.parquet` under an output directory using this crate's
@@ -217,6 +222,33 @@ pub struct RenderPathwayArtifactArgs {
 /// Arguments for the `compute-pathway-discriminability` subcommand.
 pub struct ComputePathwayDiscriminabilityArgs {
     /// Existing scan output directory with `pathway_scores.parquet`.
+    #[arg(long, default_value = "results")]
+    pub output_dir: PathBuf,
+    /// Always read the merged `pathway_scores.parquet` instead of walking
+    /// the `pathway_shards/` tree. Use when the local shard tree is
+    /// partial (e.g., still being transferred from the cluster) but the
+    /// merged file is complete — the default cluster-side behavior
+    /// prefers shards to keep peak memory bounded.
+    #[arg(long, default_value_t = false)]
+    pub from_merged: bool,
+}
+
+#[derive(Debug, Parser)]
+/// Arguments for the `render-pathway-discriminability` subcommand.
+pub struct RenderPathwayDiscriminabilityArgs {
+    /// Existing output directory with `pathway_discriminability.parquet`.
+    #[arg(long, default_value = "results")]
+    pub output_dir: PathBuf,
+}
+
+#[derive(Debug, Parser)]
+/// Arguments for the `export-pathway-discriminability-json` subcommand.
+pub struct ExportPathwayDiscriminabilityJsonArgs {
+    /// Existing output directory containing
+    /// `pathway_discriminability.parquet` and
+    /// `pathway_discriminability_per_class.parquet`. The JSON is written
+    /// alongside those parquets as
+    /// `pathway_discriminability_lines.json`.
     #[arg(long, default_value = "results")]
     pub output_dir: PathBuf,
 }

@@ -2,15 +2,17 @@
   "datasets": [
     {
       "slug": "harmonized-full",
-      "label": "harmonized-full",
+      "label": "Harmonized-full",
       "configs_url": "data/harmonized-full/distribution_grid_configs.json",
-      "grid_url": "data/harmonized-full/distribution_grid.npz"
+      "grid_url": "data/harmonized-full/distribution_grid.npz",
+      "pathways_url": "data/harmonized-full/pathway_discriminability_lines.json"
     },
     {
       "slug": "gems-sampled",
-      "label": "gems-sampled",
+      "label": "GeMS-sampled",
       "configs_url": "data/gems-sampled/distribution_grid_configs.json",
-      "grid_url": "data/gems-sampled/distribution_grid.npz"
+      "grid_url": "data/gems-sampled/distribution_grid.npz",
+      "pathways_url": null
     }
   ]
 }

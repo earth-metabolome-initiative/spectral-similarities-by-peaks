@@ -102,38 +102,24 @@ impl ConfigKey {
         })
     }
 
-    /// Human-readable single-line summary used in the heatmap caption / pill labels.
-    #[allow(dead_code)]
-    pub fn pretty(self) -> String {
-        let mut parts = Vec::new();
-        if self.mz_exp.as_f64() > 0.0 {
-            let v = self.mz_exp.as_f64();
-            if (v - 1.0).abs() < 1.0e-9 {
-                parts.push("m/z".to_string());
-            } else {
-                parts.push(format!("m/z^{}", self.mz_exp.label()));
-            }
-        }
-        let int_v = self.int_exp.as_f64();
-        if int_v > 0.0 {
-            if (int_v - 1.0).abs() < 1.0e-9 {
-                parts.push("intensity".to_string());
-            } else {
-                parts.push(format!("intensity^{}", self.int_exp.label()));
-            }
-        }
-        let weight = parts.join(" · ");
-        let family = self.family.label();
-        let weighted_tag = match self.weighted {
-            Some(true) => " (weighted)",
-            Some(false) => " (unweighted)",
+    /// Inverse of [`Self::parse`]: rebuild the original config slug.
+    pub fn slug(self) -> String {
+        let family_prefix = match self.family {
+            Family::Cosine => "cosine",
+            Family::ModifiedCosine => "modified_cosine",
+            Family::Entropy => "entropy",
+            Family::ModifiedEntropy => "modified_entropy",
+        };
+        let weighted_suffix = match self.weighted {
+            Some(true) => "_weightedtrue",
+            Some(false) => "_weightedfalse",
             None => "",
         };
-        if weight.is_empty() {
-            format!("{family}{weighted_tag}")
-        } else {
-            format!("{family}{weighted_tag}, w ∝ {weight}")
-        }
+        format!(
+            "{family_prefix}_mz{:.3}_int{:.3}{weighted_suffix}",
+            self.mz_exp.as_f64(),
+            self.int_exp.as_f64(),
+        )
     }
 }
 

@@ -63,6 +63,9 @@ jobs:
           test -d "${OUT}" || (echo "missing build output at ${OUT}" && exit 1)
           # Drop a .nojekyll so Pages serves files starting with underscore literally.
           touch "${OUT}/.nojekyll"
+          # Pin the custom domain on every deploy. Without this file Pages
+          # would strip the user-configured domain on the next workflow run.
+          echo "topkpeaks.earthmetabolome.org" > "${OUT}/CNAME"
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

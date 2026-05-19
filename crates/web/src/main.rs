@@ -6,22 +6,37 @@
 
 mod config_key;
 mod fetch;
+mod pathway_panel;
 mod responsive_svg;
+mod svg_export;
+mod url_state;
 
+use std::collections::HashSet;
 use std::rc::Rc;
 
-use config_key::{ConfigCatalog, ConfigKey, Family};
+use config_key::{ConfigCatalog, ConfigKey, ExpKey, Family};
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::fa_brands_icons::FaGithub;
 use dioxus_free_icons::icons::fa_solid_icons::{
-    FaChartArea, FaCircleInfo, FaDatabase, FaSliders, FaWaveSquare,
+    FaChartArea, FaCircleInfo, FaDownload, FaHandshake, FaSliders, FaWaveSquare,
 };
-use spectral_render::{GridViews, Metric, Scales, render_cell_svg};
+use spectral_render::{GridViews, Metric, PathwayMetric, Scales, render_cell_svg};
 
-use crate::fetch::{ConfigEntry, DatasetEntry, DistributionGrid, Manifest};
+use crate::fetch::{ConfigEntry, DatasetEntry, DistributionGrid, Manifest, PathwayLinesData};
+use crate::pathway_panel::{PathwayPanel, WeightedChoice, default_filter_state};
 
 const DATA_BASE_URL: &str = "data/";
+
+/// `dataset_resource`'s payload type. The leading `usize` is the
+/// `dataset_index` the fetch was kicked off for, so consumers can ignore
+/// the value while the user is mid-switch (i.e. when the resource still
+/// holds the previous dataset's response).
+type DatasetResource = Resource<Result<(usize, Vec<ConfigEntry>, DistributionGrid), String>>;
+
+/// `pathway_resource`'s payload type. Same `usize`-tagged shape so the
+/// pathway-classification panel can also gate its render on freshness.
+type PathwayResource = Resource<Result<(usize, PathwayLinesData), String>>;
 
 /// Axis of the heatmap value. Combined with [`ColorScale`] to produce one of
 /// the eight rendered metrics in [`spectral_render::Metric`].
@@ -40,6 +55,26 @@ impl MetricKind {
         (Self::MeanDelta, "Δ mean"),
         (Self::Wasserstein1d, "Wasserstein"),
     ];
+
+    /// URL-friendly slug used by [`url_state`] to round-trip the choice.
+    const fn slug(self) -> &'static str {
+        match self {
+            Self::KsPvalueAsymptotic => "ks_pvalue",
+            Self::KsStatistic => "ks_stat",
+            Self::MeanDelta => "mean_delta",
+            Self::Wasserstein1d => "wasserstein",
+        }
+    }
+
+    /// Inverse of [`Self::slug`]. Unknown slugs fall back to KS p-value.
+    fn from_slug(value: &str) -> Self {
+        match value {
+            "ks_stat" => Self::KsStatistic,
+            "mean_delta" => Self::MeanDelta,
+            "wasserstein" => Self::Wasserstein1d,
+            _ => Self::KsPvalueAsymptotic,
+        }
+    }
 }
 
 /// Linear vs logarithmic color mapping.
@@ -51,6 +86,52 @@ enum ColorScale {
 
 impl ColorScale {
     const ALL: [(Self, &'static str); 2] = [(Self::Log, "Log"), (Self::Linear, "Linear")];
+
+    /// URL-friendly slug used by [`url_state`].
+    const fn slug(self) -> &'static str {
+        match self {
+            Self::Log => "log",
+            Self::Linear => "linear",
+        }
+    }
+
+    /// Inverse of [`Self::slug`]. Unknown slugs fall back to log scale.
+    fn from_slug(value: &str) -> Self {
+        match value {
+            "linear" => Self::Linear,
+            _ => Self::Log,
+        }
+    }
+}
+
+/// Top-level view inside the [`Viewer`]. Heatmaps tab shows the existing
+/// p-value / D-statistic heatmap explorer. Pathways tab shows AUROC /
+/// AUPRC line plots from `pathway_discriminability_lines.json`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+enum ViewerTab {
+    Heatmaps,
+    Pathways,
+}
+
+impl ViewerTab {
+    const ALL: [(Self, &'static str); 2] =
+        [(Self::Heatmaps, "Heatmaps"), (Self::Pathways, "Pathways")];
+
+    /// URL-friendly slug.
+    const fn slug(self) -> &'static str {
+        match self {
+            Self::Heatmaps => "heatmaps",
+            Self::Pathways => "pathways",
+        }
+    }
+
+    /// Inverse of [`Self::slug`].
+    fn from_slug(value: &str) -> Self {
+        match value {
+            "pathways" => Self::Pathways,
+            _ => Self::Heatmaps,
+        }
+    }
 }
 
 /// One-sentence plain-language tooltip for a dataset pill.
@@ -190,8 +271,7 @@ const fn color_meaning(kind: MetricKind) -> &'static str {
 }
 
 /// Sentence fragment naming the similarity family + weighting for embedding
-/// inside the caption. Reads better than [`ConfigKey::pretty`] inside flowing
-/// prose because the comma there clashes with the surrounding sentence.
+/// inside the caption.
 fn config_caption_phrase(key: ConfigKey) -> String {
     let weighted_tag = match key.weighted {
         Some(true) => " (weighted)",
@@ -236,13 +316,15 @@ fn config_caption_phrase(key: ConfigKey) -> String {
 /// Returns an HTML fragment safe to inject via Dioxus' `dangerous_inner_html`
 /// because the caption template only ever contains values produced by this
 /// crate (no user-supplied text).
-fn caption_to_html(caption: &str) -> String {
-    let (title, rest) = caption
-        .find('.')
-        .map_or((caption, ""), |idx| caption.split_at(idx + 1));
+#[must_use]
+pub fn caption_to_html(caption: &str) -> String {
+    let (title, rest) =
+        first_sentence_end(caption).map_or((caption, ""), |split_at| caption.split_at(split_at));
 
     // Order matters: longer / compound tokens must be replaced before the
-    // shorter ones they contain (e.g. "near-white" before "white").
+    // shorter ones they contain (e.g. "near-white" before "white"). The
+    // replacement honours word boundaries so substrings like "red" inside
+    // "predicted" do not get coloured.
     let color_words: &[(&str, &str)] = &[
         ("near-white", "#6b6b6b"),
         ("yellow", "#b08400"),
@@ -255,9 +337,68 @@ fn caption_to_html(caption: &str) -> String {
     let mut rest_html = rest.to_string();
     for (word, color) in color_words {
         let replacement = format!("<strong style=\"color: {color};\">{word}</strong>");
-        rest_html = rest_html.replace(word, &replacement);
+        rest_html = replace_word_boundary(&rest_html, word, &replacement);
     }
     format!("<strong>{title}</strong>{rest_html}")
+}
+
+/// Replace every word-boundary-bounded occurrence of `needle` in `haystack`
+/// with `replacement`. An occurrence is considered "bounded" when neither
+/// the character immediately before nor the character immediately after is
+/// alphanumeric, `_`, or `-`. This is what stops a literal color word like
+/// "red" from being recoloured inside "p**red**icted".
+fn replace_word_boundary(haystack: &str, needle: &str, replacement: &str) -> String {
+    if needle.is_empty() {
+        return haystack.to_string();
+    }
+    let is_word_char = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
+    let mut out = String::with_capacity(haystack.len());
+    let mut last_end = 0;
+    let mut search_start = 0;
+    while let Some(rel_idx) = haystack[search_start..].find(needle) {
+        let idx = search_start + rel_idx;
+        let prev_is_word = haystack[..idx]
+            .chars()
+            .next_back()
+            .is_some_and(is_word_char);
+        let next_is_word = haystack[idx + needle.len()..]
+            .chars()
+            .next()
+            .is_some_and(is_word_char);
+        out.push_str(&haystack[last_end..idx]);
+        if prev_is_word || next_is_word {
+            out.push_str(needle);
+        } else {
+            out.push_str(replacement);
+        }
+        last_end = idx + needle.len();
+        search_start = last_end;
+    }
+    out.push_str(&haystack[last_end..]);
+    out
+}
+
+/// Find the byte offset immediately after the first sentence-ending
+/// period in `text`, or `None` if there is no such period. A period
+/// counts as sentence-ending only when it is followed by whitespace or
+/// end-of-string, so decimals like `intensity^0.6` are not treated as a
+/// sentence boundary and the caption's title segment stays bold all
+/// the way to the real first `. `.
+fn first_sentence_end(text: &str) -> Option<usize> {
+    let mut search_start = 0;
+    while let Some(rel) = text[search_start..].find('.') {
+        let idx = search_start + rel;
+        let after_dot = idx + '.'.len_utf8();
+        let bounded = text[after_dot..]
+            .chars()
+            .next()
+            .is_none_or(char::is_whitespace);
+        if bounded {
+            return Some(after_dot);
+        }
+        search_start = after_dot;
+    }
+    None
 }
 
 /// Format an α / D threshold value compactly for inline mention.
@@ -324,7 +465,18 @@ const fn combine_metric(kind: MetricKind, scale: ColorScale) -> Metric {
     }
 }
 
-const FONTS_HREF: &str = "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;700&family=Syne:wght@700&display=swap";
+/// Main stylesheet, baked into the index.html `<head>` at build time so the
+/// browser fetches it in parallel with the WASM blob and the first paint is
+/// already styled. The `with_static_head(true)` option asks the dx CLI to
+/// emit a `<link rel="stylesheet">` directly into the page template instead
+/// of injecting it from the runtime DOM effect that fires after WASM boots
+/// (the runtime path is what caused the unstyled flash). The Google Fonts
+/// `<link>` lives in `crates/web/index.html` for the same reason.
+#[allow(clippy::volatile_composites)]
+static MAIN_CSS: Asset = asset!(
+    "/assets/style.css",
+    AssetOptions::css().with_static_head(true)
+);
 
 fn main() {
     console_error_panic_hook::set_once();
@@ -337,8 +489,11 @@ fn App() -> Element {
     let manifest = use_resource(|| async move { fetch::load_manifest(DATA_BASE_URL).await });
 
     rsx! {
-        document::Stylesheet { href: FONTS_HREF }
-        document::Stylesheet { href: "style.css" }
+        // Touching MAIN_CSS keeps the asset reachable from the rsx tree so
+        // the dx CLI walks it during the asset-collection pass. The static
+        // head injection is what actually puts the <link> on the page,
+        // before WASM ever loads, so this evaluates to no observable DOM.
+        document::Stylesheet { href: MAIN_CSS }
 
         main { class: "page",
             Hero {}
@@ -368,30 +523,58 @@ fn Hero() -> Element {
     rsx! {
         header { class: "hero",
             p { class: "eyebrow", "Earth Metabolome Initiative" }
-            h1 { class: "hero-title",
-                "Spectral similarities by "
-                span { class: "hero-accent", "peaks" }
+            div { class: "hero-titlebar",
+                h1 { class: "hero-title",
+                    "Spectral similarities by "
+                    span { class: "hero-accent", "peaks" }
+                }
+                div { class: "pill-row hero-actions",
+                    a {
+                        class: "pill",
+                        href: "https://github.com/earth-metabolome-initiative/spectral-similarities-by-peaks",
+                        target: "_blank",
+                        rel: "noopener noreferrer",
+                        title: "Open the spectral-similarities-by-peaks repository on GitHub.",
+                        aria_label: "Open the spectral-similarities-by-peaks repository on GitHub.",
+                        span { aria_hidden: "true",
+                            Icon { width: 14, height: 14, icon: FaGithub }
+                        }
+                        "Source code"
+                    }
+                    a {
+                        class: "pill pill-collab",
+                        href: "https://github.com/earth-metabolome-initiative/spectral-similarities-by-peaks/issues/new?template=collab.yml",
+                        target: "_blank",
+                        rel: "noopener noreferrer",
+                        title: "Open a pre-filled GitHub issue describing what you want to collaborate on.",
+                        aria_label: "Open a pre-filled GitHub issue to describe a collaboration interest.",
+                        span { aria_hidden: "true",
+                            Icon { width: 14, height: 14, icon: FaHandshake }
+                        }
+                        "I want to collab!"
+                    }
+                }
             }
             p { class: "abstract",
-                "This experiment quantifies, on two reference MS2 corpora (the 443 905-spectrum "
+                "This experiment quantifies, across ~80 billion (query, candidate) similarity scores drawn from the "
                 a {
                     href: "https://zenodo.org/records/20042904",
                     target: "_blank",
                     rel: "noopener noreferrer",
                     "harmonized annotated dataset"
                 }
-                " and a 100 000-query sample of the "
+                " and a sample of the "
                 a {
                     href: "https://zenodo.org/records/20040772",
                     target: "_blank",
                     rel: "noopener noreferrer",
                     "GeMS-A10 corpus"
                 }
-                "), how the empirical score distribution of a spectral similarity changes when each spectrum is truncated to its top-"
+                ", how the empirical score distribution of a spectral similarity changes when each spectrum is truncated to its top-"
                 em { "k" }
                 " intensity peaks for "
                 em { "k" }
-                " spanning 1 to 128. Eighteen similarity configurations covering "
+                " from 1 to 128. Eighteen configurations across "
                 a {
                     href: "https://doi.org/10.1016/1044-0305(94)87009-8",
                     target: "_blank",
@@ -412,47 +595,35 @@ fn Hero() -> Element {
                     rel: "noopener noreferrer",
                     "Entropy"
                 }
-                " and Modified entropy (this work, by analogy with Modified cosine) at multiple m/z and intensity exponents are compared cell-by-cell on the resulting 128 by 128 grid using four metrics: asymptotic Kolmogorov-Smirnov p-value, KS D statistic, signed difference of means, and 1-D Wasserstein distance. The distributions stabilise quickly across every configuration. The negligible-drift threshold D ≤ 0.05 is reached at 4 to 47 retained peaks and the strict-equivalence threshold D ≤ 0.01 at 7 to 103, with the intensity exponent dominating the per-configuration diversity ranking. Because each cell aggregates 6 to 28 million pairwise scores, the asymptotic p-values fall deep inside "
+                ", and Modified entropy at several m/z and intensity exponents are compared cell-by-cell on the 128 by 128 grid by KS D statistic, asymptotic KS p-value, mean difference, and 1-D Wasserstein distance. The Rust pipeline uses "
+                a {
+                    href: "https://doi.org/10.1038/s41592-023-02012-9",
+                    target: "_blank",
+                    rel: "noopener noreferrer",
+                    "Flash entropy search"
+                }
+                "-style indices and still ran ~70k compute hours on Lawrencium. Distributions stabilise quickly: D ≤ 0.05 at 4 to 47 retained peaks, D ≤ 0.01 at 7 to 103, with intensity exponent dominating the per-config diversity ranking. With 6 to 28 million pairs per cell the asymptotic p-values fall inside "
                 a {
                     href: "https://en.wikipedia.org/wiki/Lindley%27s_paradox",
                     target: "_blank",
                     rel: "noopener noreferrer",
                     "Lindley's-paradox"
                 }
-                " territory and collapse to numerically zero across most of the grid. The figures therefore lean on the sample-size-invariant D statistic as the primary effect-size cue. Pathway-classification metrics, namely AUROC and AUPRC of a k-nearest-pathway classifier aggregating these similarities against fixed "
+                " territory, so the figures rely on the sample-size-invariant D statistic. A second line of inquiry builds a reference panel of up to 35 spectra (5 from each of the 7 base "
                 a {
                     href: "https://doi.org/10.1186/s13321-022-00624-5",
                     target: "_blank",
                     rel: "noopener noreferrer",
-                    "NPClassifier-pathway"
+                    "NPClassifier"
                 }
-                " representatives, are still being computed on the cluster and will be folded in once the underlying parquet finishes transferring."
-            }
-            div { class: "pill-row",
+                " pathways), scores every query against it as a per-pathway similarity-sum, and reports AUROC, AUPRC, accuracy, and MCC. The similarity-sum carries no usable predictive signal: per-pathway one-vs-rest MCC stays within [-0.17, 0.13] and the support-weighted aggregate caps at 0.024, a clean illustration of why "
                 a {
-                    class: "pill",
-                    href: "https://github.com/earth-metabolome-initiative/spectral-similarities-by-peaks",
+                    href: "https://doi.org/10.1186/s13040-023-00322-4",
                     target: "_blank",
                     rel: "noopener noreferrer",
-                    title: "Open the spectral-similarities-by-peaks repository on GitHub.",
-                    aria_label: "Open the spectral-similarities-by-peaks repository on GitHub.",
-                    span { aria_hidden: "true",
-                        Icon { width: 14, height: 14, icon: FaGithub }
-                    }
-                    "Source code"
+                    "MCC tracks performance more honestly than accuracy or AUROC under class imbalance"
                 }
-                a {
-                    class: "pill",
-                    href: "https://github.com/LucaCappelletti94/mascot-rs",
-                    target: "_blank",
-                    rel: "noopener noreferrer",
-                    title: "Open the mascot-rs companion library on GitHub.",
-                    aria_label: "Open the mascot-rs companion library on GitHub.",
-                    span { aria_hidden: "true",
-                        Icon { width: 14, height: 14, icon: FaGithub }
-                    }
-                    "mascot-rs"
-                }
+                ". With a single deterministic representative draw none of these numbers carry confidence intervals. Future work in the README covers exponent ranges beyond the current grid, repeated sampling of random class representatives, and a mechanistic write-up of why certain similarity-and-peak-count combinations seem to align with certain pathways. The Pathways tab below lets the reader pick a pathway and metric and toggle similarity-family, m/z, intensity, and entropy-weighting filters."
             }
         }
     }
@@ -461,15 +632,89 @@ fn Hero() -> Element {
 #[component]
 #[allow(non_snake_case)]
 fn Viewer(datasets: Vec<DatasetEntry>) -> Element {
-    let dataset_index = use_signal(|| 0_usize);
-    let metric_kind = use_signal(|| MetricKind::KsPvalueAsymptotic);
-    let color_scale = use_signal(|| ColorScale::Log);
+    // Restore URL-encoded state once on mount. Every `use_signal` below
+    // initialises from this snapshot, and a `use_effect` at the end of
+    // this function mirrors every signal change back into the URL.
+    let initial = url_state::read();
+
+    let initial_dataset_index = initial
+        .dataset
+        .as_deref()
+        .and_then(|slug| datasets.iter().position(|d| d.slug == slug))
+        .unwrap_or(0);
+    let dataset_index = use_signal(|| initial_dataset_index);
+    let active_tab = use_signal(|| {
+        initial
+            .tab
+            .as_deref()
+            .map_or(ViewerTab::Heatmaps, ViewerTab::from_slug)
+    });
+    let metric_kind = use_signal(|| {
+        initial
+            .metric
+            .as_deref()
+            .map_or(MetricKind::KsPvalueAsymptotic, MetricKind::from_slug)
+    });
+    let color_scale = use_signal(|| {
+        initial
+            .scale
+            .as_deref()
+            .map_or(ColorScale::Log, ColorScale::from_slug)
+    });
     // Slider positions on a 0..=300 axis mapped through `log_slider_value`
     // to a value in `[10^-3, 10^0]`. 170 ≈ 0.05, the literature default.
-    let alpha_milli = use_signal(|| 170_u32);
-    let d_centi = use_signal(|| 170_u32);
-    // Holds the user-selected ConfigKey. Re-derived when the dataset changes.
-    let active_key: Signal<Option<ConfigKey>> = use_signal(|| None);
+    let alpha_milli = use_signal(|| initial.alpha.unwrap_or(170));
+    let d_centi = use_signal(|| initial.d.unwrap_or(170));
+    // Holds the user-selected ConfigKey. Re-derived when the dataset changes
+    // (or restored from the `config=` URL parameter via the catalog lookup).
+    let initial_config_slug = initial.config.clone();
+    let active_key: Signal<Option<ConfigKey>> =
+        use_signal(|| initial_config_slug.as_deref().and_then(ConfigKey::parse));
+
+    // Pathway-tab signals. Filter sets stay empty until the JSON loads,
+    // then `default_filter_state` replaces them with the "all on" defaults
+    // (unless the URL already provided a subset).
+    let pathway_metric = use_signal(|| {
+        initial.p_metric.as_deref().map_or(
+            PathwayMetric::Auroc,
+            url_state::UrlState::parse_pathway_metric,
+        )
+    });
+    let pathway_index: Signal<usize> = use_signal(|| 0);
+    let pathway_families: Signal<HashSet<Family>> = use_signal(|| {
+        initial
+            .families
+            .as_ref()
+            .map(|v| url_state::slugs_as_families(v))
+            .unwrap_or_default()
+    });
+    let pathway_mz_keys: Signal<HashSet<ExpKey>> = use_signal(|| {
+        initial
+            .mz
+            .as_ref()
+            .map(|v| url_state::floats_as_exp_keys(v))
+            .unwrap_or_default()
+    });
+    let pathway_int_keys: Signal<HashSet<ExpKey>> = use_signal(|| {
+        initial
+            .int
+            .as_ref()
+            .map(|v| url_state::floats_as_exp_keys(v))
+            .unwrap_or_default()
+    });
+    let pathway_weighted: Signal<HashSet<WeightedChoice>> = use_signal(|| {
+        initial
+            .weighted
+            .as_ref()
+            .map(|v| url_state::slugs_as_weighted(v))
+            .unwrap_or_default()
+    });
+
+    // Pending pathway label from the URL. Resolved to a `pathway_index`
+    // once the JSON arrives in the configuration panel.
+    let initial_pathway_label = initial.pathway.clone();
+    let pending_pathway_label: Signal<Option<String>> =
+        use_signal(|| initial_pathway_label.clone());
 
     let datasets_for_resource = datasets.clone();
     let dataset_resource = use_resource(move || {
@@ -481,30 +726,127 @@ fn Viewer(datasets: Vec<DatasetEntry>) -> Element {
                 .ok_or_else(|| "dataset index out of range".to_string())?;
             let configs = fetch::load_configs(&entry.configs_url).await?;
             let grid = fetch::load_grid(&entry.grid_url).await?;
-            Ok::<(Vec<ConfigEntry>, DistributionGrid), String>((configs, grid))
+            // Carrying `chosen` lets downstream consumers ignore the
+            // payload while the user is mid-switch (the resource value
+            // outlives the dataset_index change until the new fetch
+            // resolves).
+            Ok::<(usize, Vec<ConfigEntry>, DistributionGrid), String>((chosen, configs, grid))
         }
+    });
+
+    let datasets_for_pathway = datasets.clone();
+    let pathway_resource = use_resource(move || {
+        let datasets = datasets_for_pathway.clone();
+        let chosen = dataset_index();
+        async move {
+            let entry = datasets
+                .get(chosen)
+                .ok_or_else(|| "dataset index out of range".to_string())?;
+            let url = entry
+                .pathways_url
+                .as_ref()
+                .ok_or_else(|| "no pathways URL for this dataset".to_string())?;
+            let data = fetch::load_pathway_lines(url).await?;
+            Ok::<(usize, PathwayLinesData), String>((chosen, data))
+        }
+    });
+
+    let pathways_url_for_panel = datasets
+        .get(dataset_index())
+        .and_then(|entry| entry.pathways_url.clone());
+
+    // Mirror every UI choice into the URL so it stays shareable.
+    let datasets_for_url = datasets.clone();
+    use_effect(move || {
+        let mut state = url_state::UrlState::default();
+        let tab = active_tab();
+        state.tab = Some(tab.slug().to_string());
+        if let Some(entry) = datasets_for_url.get(dataset_index()) {
+            state.dataset = Some(entry.slug.clone());
+        }
+        match tab {
+            ViewerTab::Heatmaps => {
+                state.metric = Some(metric_kind().slug().to_string());
+                state.scale = Some(color_scale().slug().to_string());
+                state.alpha = Some(alpha_milli());
+                state.d = Some(d_centi());
+                if let Some(key) = *active_key.read() {
+                    state.config = Some(key.slug());
+                }
+            }
+            ViewerTab::Pathways => {
+                state.p_metric =
+                    Some(url_state::UrlState::pathway_metric_slug(pathway_metric()).to_string());
+                if let Some(label) = pending_pathway_label.read().clone() {
+                    state.pathway = Some(label);
+                }
+                let families_snapshot = pathway_families.read().clone();
+                if !families_snapshot.is_empty() {
+                    state.families = Some(url_state::families_as_slugs(&families_snapshot));
+                }
+                let mz_snapshot = pathway_mz_keys.read().clone();
+                if !mz_snapshot.is_empty() {
+                    state.mz = Some(url_state::exp_keys_as_floats(&mz_snapshot));
+                }
+                let int_snapshot = pathway_int_keys.read().clone();
+                if !int_snapshot.is_empty() {
+                    state.int = Some(url_state::exp_keys_as_floats(&int_snapshot));
+                }
+                let weighted_snapshot = pathway_weighted.read().clone();
+                if !weighted_snapshot.is_empty() {
+                    state.weighted = Some(url_state::weighted_as_slugs(&weighted_snapshot));
+                }
+            }
+        }
+        url_state::write(&state);
     });
 
     rsx! {
         ConfigurationPanel {
             datasets: datasets.clone(),
             dataset_index,
+            active_tab,
             metric_kind,
             color_scale,
             alpha_milli,
             d_centi,
             active_key,
             dataset_resource,
+            pathway_resource,
+            pathway_metric,
+            pathway_index,
+            pathway_families,
+            pathway_mz_keys,
+            pathway_int_keys,
+            pathway_weighted,
+            pending_pathway_label,
         }
-        HeatmapPanel {
-            datasets: datasets.clone(),
-            dataset_index,
-            metric_kind,
-            color_scale,
-            alpha_milli,
-            d_centi,
-            active_key,
-            dataset_resource,
+        match active_tab() {
+            ViewerTab::Heatmaps => rsx! {
+                HeatmapPanel {
+                    datasets: datasets.clone(),
+                    dataset_index,
+                    metric_kind,
+                    color_scale,
+                    alpha_milli,
+                    d_centi,
+                    active_key,
+                    dataset_resource,
+                }
+            },
+            ViewerTab::Pathways => rsx! {
+                PathwayPanel {
+                    pathways_url: pathways_url_for_panel.clone(),
+                    pathway_resource,
+                    dataset_index,
+                    pathway_index,
+                    metric: pathway_metric,
+                    families: pathway_families,
+                    mz_keys: pathway_mz_keys,
+                    int_keys: pathway_int_keys,
+                    weighted: pathway_weighted,
+                }
+            },
         }
     }
 }
@@ -514,21 +856,38 @@ fn Viewer(datasets: Vec<DatasetEntry>) -> Element {
 fn ConfigurationPanel(
     datasets: Vec<DatasetEntry>,
     dataset_index: Signal<usize>,
+    active_tab: Signal<ViewerTab>,
     metric_kind: Signal<MetricKind>,
     color_scale: Signal<ColorScale>,
     alpha_milli: Signal<u32>,
     d_centi: Signal<u32>,
     active_key: Signal<Option<ConfigKey>>,
-    dataset_resource: Resource<Result<(Vec<ConfigEntry>, DistributionGrid), String>>,
+    dataset_resource: DatasetResource,
+    pathway_resource: PathwayResource,
+    pathway_metric: Signal<PathwayMetric>,
+    pathway_index: Signal<usize>,
+    pathway_families: Signal<HashSet<Family>>,
+    pathway_mz_keys: Signal<HashSet<ExpKey>>,
+    pathway_int_keys: Signal<HashSet<ExpKey>>,
+    pathway_weighted: Signal<HashSet<WeightedChoice>>,
+    pending_pathway_label: Signal<Option<String>>,
 ) -> Element {
+    let current_idx = dataset_index();
     let configs_state = dataset_resource.read_unchecked();
+    // Only build the catalog when the resource payload corresponds to the
+    // currently selected dataset. While the user is mid-switch the resource
+    // still holds the previous dataset's configs, and seeding `active_key`
+    // from them would point the heatmap at the old config under a new
+    // dataset label (the "needs two clicks to switch" bug).
     let catalog: Option<Rc<ConfigCatalog>> = match &*configs_state {
-        Some(Ok((configs, _))) => Some(Rc::new(ConfigCatalog::new(
-            &configs
-                .iter()
-                .map(|c| (c.config_index, c.config.clone()))
-                .collect::<Vec<_>>(),
-        ))),
+        Some(Ok((fetched_idx, configs, _))) if *fetched_idx == current_idx => {
+            Some(Rc::new(ConfigCatalog::new(
+                &configs
+                    .iter()
+                    .map(|c| (c.config_index, c.config.clone()))
+                    .collect::<Vec<_>>(),
+            )))
+        }
         _ => None,
     };
 
@@ -538,6 +897,38 @@ fn ConfigurationPanel(
             if let Some(first) = catalog_rc.first() {
                 let mut sig = active_key;
                 sig.set(Some(first));
+            }
+        }
+    }
+
+    let dataset_has_pathways = datasets
+        .get(current_idx)
+        .map(|entry| entry.pathways_url.is_some())
+        .unwrap_or(false);
+
+    // Once the pathway JSON arrives, seed every filter set with every
+    // value seen in the data so the default is "all on", and resolve any
+    // pending URL-derived pathway label into a concrete `pathway_index`.
+    // Same guard as above: only act when the payload matches the active
+    // dataset.
+    let pathway_state = pathway_resource.read_unchecked();
+    if let Some(Ok((fetched_idx, data))) = &*pathway_state {
+        if *fetched_idx == current_idx {
+            if pathway_families.read().is_empty() {
+                let (fams, mz, ints, weighted) = default_filter_state(data);
+                pathway_families.clone().set(fams);
+                pathway_mz_keys.clone().set(mz);
+                pathway_int_keys.clone().set(ints);
+                pathway_weighted.clone().set(weighted);
+            }
+            if let Some(label) = pending_pathway_label.read().clone() {
+                if let Some(idx) = data.pathways.iter().position(|p| p.label == label) {
+                    if pathway_index() != idx {
+                        pathway_index.clone().set(idx);
+                    }
+                }
+            } else if let Some(entry) = data.pathways.get(pathway_index()) {
+                pending_pathway_label.clone().set(Some(entry.label.clone()));
             }
         }
     }
@@ -564,6 +955,7 @@ fn ConfigurationPanel(
                 div { class: "pill-row",
                     for (i, entry) in datasets.iter().enumerate() {
                         Pill {
+                            key: "{entry.slug}",
                             label: entry.label.clone(),
                             active: dataset_index() == i,
                             disabled: false,
@@ -572,9 +964,17 @@ fn ConfigurationPanel(
                             on_click: {
                                 let mut sig = dataset_index;
                                 let mut key_sig = active_key;
+                                let mut fam_sig = pathway_families;
+                                let mut mz_sig = pathway_mz_keys;
+                                let mut int_sig = pathway_int_keys;
+                                let mut weighted_sig = pathway_weighted;
                                 move |_| {
                                     sig.set(i);
                                     key_sig.set(None);
+                                    fam_sig.set(HashSet::new());
+                                    mz_sig.set(HashSet::new());
+                                    int_sig.set(HashSet::new());
+                                    weighted_sig.set(HashSet::new());
                                 }
                             },
                         }
@@ -582,8 +982,378 @@ fn ConfigurationPanel(
                 }
             }
 
-            // Metric (kind) row
+            // View (tab) row
             div { class: "field-row",
+                span {
+                    class: "field-label",
+                    title: "Heatmaps shows the p-value and KS-statistic grids. Pathways shows AUROC / AUPRC line plots from the pathway-classification task.",
+                    "View"
+                }
+                div { class: "pill-row",
+                    for (tab, label) in ViewerTab::ALL {
+                        Pill {
+                            key: "{tab.slug()}",
+                            label: label.to_string(),
+                            active: active_tab() == tab,
+                            disabled: matches!(tab, ViewerTab::Pathways) && !dataset_has_pathways,
+                            tone: PillTone::Rust,
+                            description: Some(match tab {
+                                ViewerTab::Heatmaps => "Existing per-config distribution heatmaps".to_string(),
+                                ViewerTab::Pathways => "Per-pathway AUROC / AUPRC line plots from pathway_discriminability_per_class.parquet".to_string(),
+                            }),
+                            on_click: {
+                                let mut sig = active_tab;
+                                move |_| sig.set(tab)
+                            },
+                        }
+                    }
+                }
+            }
+
+            // Tab-specific configuration
+            if active_tab() == ViewerTab::Pathways {
+                PathwayConfigSection {
+                    pathway_resource,
+                    dataset_index,
+                    pathway_metric,
+                    pathway_index,
+                    pathway_families,
+                    pathway_mz_keys,
+                    pathway_int_keys,
+                    pathway_weighted,
+                    pending_pathway_label,
+                }
+            } else { HeatmapConfigSection {
+                catalog,
+                metric_kind,
+                color_scale,
+                alpha_milli,
+                d_centi,
+                active_key,
+            } }
+        }
+    }
+}
+
+/// Pathway-classification configuration rows. Rendered when the user
+/// switches to the Pathways tab. Reads the same pathway-lines resource as
+/// the right-panel `PathwayPanel` so toggling a filter does not trigger a
+/// network request.
+#[component]
+#[allow(non_snake_case, clippy::too_many_arguments)]
+fn PathwayConfigSection(
+    pathway_resource: PathwayResource,
+    dataset_index: Signal<usize>,
+    pathway_metric: Signal<PathwayMetric>,
+    pathway_index: Signal<usize>,
+    pathway_families: Signal<HashSet<Family>>,
+    pathway_mz_keys: Signal<HashSet<ExpKey>>,
+    pathway_int_keys: Signal<HashSet<ExpKey>>,
+    pathway_weighted: Signal<HashSet<WeightedChoice>>,
+    pending_pathway_label: Signal<Option<String>>,
+) -> Element {
+    let current_idx = dataset_index();
+    let state = pathway_resource.read_unchecked();
+    let data = match &*state {
+        // Hold the previous dataset's payload back while a new fetch is
+        // mid-flight so the filter pills don't briefly re-render against
+        // stale configs.
+        Some(Ok((fetched_idx, data))) if *fetched_idx == current_idx => data.clone(),
+        _ => {
+            return rsx! {
+                p { class: "loading", "Loading pathway data…" }
+            };
+        }
+    };
+
+    let mut available_families: Vec<Family> = Vec::new();
+    let mut available_mz: Vec<f64> = Vec::new();
+    let mut available_int: Vec<f64> = Vec::new();
+    let mut available_weighted: Vec<Option<bool>> = Vec::new();
+    for entry in &data.configs {
+        let fam = pathway_panel::parse_family(&entry.family);
+        if !available_families.contains(&fam) {
+            available_families.push(fam);
+        }
+        if !available_mz.iter().any(|v| (v - entry.mz_exp).abs() < 1e-9) {
+            available_mz.push(entry.mz_exp);
+        }
+        if !available_int
+            .iter()
+            .any(|v| (v - entry.intensity_exp).abs() < 1e-9)
+        {
+            available_int.push(entry.intensity_exp);
+        }
+        if !available_weighted.contains(&entry.weighted) {
+            available_weighted.push(entry.weighted);
+        }
+    }
+    available_mz.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    available_int.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    let metric_options: [(PathwayMetric, &str, &str); 4] = [
+        (
+            PathwayMetric::Auroc,
+            "AUROC",
+            "Area under the ROC curve, computed from the similarity score's ranking of (query, candidate) pairs. Insensitive to class prior.",
+        ),
+        (
+            PathwayMetric::Auprc,
+            "AUPRC",
+            "Area under the precision-recall curve. Sensitive to the share of positives in the class, useful for rare pathways.",
+        ),
+        (
+            PathwayMetric::Accuracy,
+            "Accuracy",
+            "Share of queries whose argmax-similarity pathway prediction matches the truth.",
+        ),
+        (
+            PathwayMetric::Mcc,
+            "MCC",
+            "Matthews correlation coefficient of the one-vs-rest classifier. Robust to class imbalance.",
+        ),
+    ];
+    let active_pathway = data.pathways.get(pathway_index());
+    let metric_supported = |metric: PathwayMetric| {
+        active_pathway.is_some_and(|p| {
+            matches!(
+                metric,
+                PathwayMetric::Auroc if p.auroc.is_some()
+            ) || matches!(metric, PathwayMetric::Auprc if p.auprc.is_some())
+                || matches!(metric, PathwayMetric::Accuracy if p.accuracy.is_some())
+                || matches!(metric, PathwayMetric::Mcc if p.mcc.is_some())
+        })
+    };
+
+    rsx! {
+        // Metric row: AUROC | AUPRC | Accuracy | MCC
+        div { class: "field-row",
+            span {
+                class: "field-label",
+                title: "Pathway-pair classifier metric drawn on the y-axis. Pills greyed out when the active pathway has no values for that metric.",
+                "Metric"
+            }
+            div { class: "pill-row",
+                for (metric, label, description) in metric_options {
+                    Pill {
+                        key: "{label}",
+                        label: label.to_string(),
+                        active: pathway_metric() == metric,
+                        disabled: !metric_supported(metric),
+                        tone: PillTone::Rust,
+                        description: Some(description.to_string()),
+                        on_click: {
+                            let mut sig = pathway_metric;
+                            move |_| sig.set(metric)
+                        },
+                    }
+                }
+            }
+        }
+
+        // Pathway row
+        div { class: "field-row",
+            span {
+                class: "field-label",
+                title: "Aggregate (micro) pools every pair into one classifier; the other entries are per-pathway one-vs-rest classifiers.",
+                "Pathway"
+            }
+            div { class: "pill-row",
+                for (idx, entry) in data.pathways.iter().enumerate() {
+                    Pill {
+                        key: "{entry.label}",
+                        label: entry.label.clone(),
+                        active: pathway_index() == idx,
+                        disabled: false,
+                        tone: PillTone::Blue,
+                        description: Some(match entry.kind.as_str() {
+                            "aggregate" => "Pooled micro-averaged classifier across every (query, candidate) pair.".to_string(),
+                            _ => "One-vs-rest classifier with the named pathway as the positive class.".to_string(),
+                        }),
+                        on_click: {
+                            let mut sig = pathway_index;
+                            let mut fams = pathway_families;
+                            let mut mz = pathway_mz_keys;
+                            let mut ints = pathway_int_keys;
+                            let mut weighted = pathway_weighted;
+                            let mut label_sig = pending_pathway_label;
+                            let label_value = entry.label.clone();
+                            let data_for_reset = data.clone();
+                            move |_| {
+                                sig.set(idx);
+                                label_sig.set(Some(label_value.clone()));
+                                let (fs, mzs, is, ws) = default_filter_state(&data_for_reset);
+                                fams.set(fs);
+                                mz.set(mzs);
+                                ints.set(is);
+                                weighted.set(ws);
+                            }
+                        },
+                    }
+                }
+            }
+        }
+
+        // Family row
+        div { class: "field-row",
+            span {
+                class: "field-label",
+                title: "Toggle similarity-metric families. Lines for deselected families disappear from the plot.",
+                "Family"
+            }
+            div { class: "pill-row",
+                for family in available_families.iter().copied() {
+                    Pill {
+                        key: "{family.label()}",
+                        label: family.label().to_string(),
+                        active: pathway_families.read().contains(&family),
+                        disabled: false,
+                        tone: PillTone::Green,
+                        description: Some(family_description(family).to_string()),
+                        on_click: {
+                            let mut sig = pathway_families;
+                            move |_| {
+                                let mut set = sig.read().clone();
+                                if set.contains(&family) {
+                                    set.remove(&family);
+                                } else {
+                                    set.insert(family);
+                                }
+                                sig.set(set);
+                            }
+                        },
+                    }
+                }
+            }
+        }
+
+        // m/z exponent row
+        div { class: "field-row",
+            span {
+                class: "field-label",
+                title: "Toggle m/z exponents. Encoded as line dash pattern in the plot.",
+                "m/z exp"
+            }
+            div { class: "pill-row",
+                for mz in available_mz.iter().copied() {
+                    Pill {
+                        key: "mz-{mz}",
+                        label: format!("{mz:.1}"),
+                        active: pathway_mz_keys.read().contains(&ExpKey::from_f64(mz)),
+                        disabled: false,
+                        tone: PillTone::Rust,
+                        description: Some(mz_exp_description(mz)),
+                        on_click: {
+                            let mut sig = pathway_mz_keys;
+                            move |_| {
+                                let key = ExpKey::from_f64(mz);
+                                let mut set = sig.read().clone();
+                                if set.contains(&key) {
+                                    set.remove(&key);
+                                } else {
+                                    set.insert(key);
+                                }
+                                sig.set(set);
+                            }
+                        },
+                    }
+                }
+            }
+        }
+
+        // Intensity exponent row
+        div { class: "field-row",
+            span {
+                class: "field-label",
+                title: "Toggle intensity exponents. Encoded as colour mix factor in the plot.",
+                "int exp"
+            }
+            div { class: "pill-row",
+                for intensity in available_int.iter().copied() {
+                    Pill {
+                        key: "int-{intensity}",
+                        label: format!("{intensity:.2}"),
+                        active: pathway_int_keys.read().contains(&ExpKey::from_f64(intensity)),
+                        disabled: false,
+                        tone: PillTone::Rust,
+                        description: Some(int_exp_description(intensity)),
+                        on_click: {
+                            let mut sig = pathway_int_keys;
+                            move |_| {
+                                let key = ExpKey::from_f64(intensity);
+                                let mut set = sig.read().clone();
+                                if set.contains(&key) {
+                                    set.remove(&key);
+                                } else {
+                                    set.insert(key);
+                                }
+                                sig.set(set);
+                            }
+                        },
+                    }
+                }
+            }
+        }
+
+        // Weighted row
+        div { class: "field-row",
+            span {
+                class: "field-label",
+                title: "Toggle entropy weighting. The flag is only meaningful for entropy / modified-entropy configs.",
+                "weighted"
+            }
+            div { class: "pill-row",
+                for value in available_weighted.iter().copied() {
+                    {
+                        let choice = WeightedChoice::from_optional(value);
+                        rsx! {
+                            Pill {
+                                key: "{choice.label()}",
+                                label: choice.label().to_string(),
+                                active: pathway_weighted.read().contains(&choice),
+                                disabled: false,
+                                tone: PillTone::Green,
+                                description: Some(value.map_or_else(
+                                    || "Configs without an entropy-weighting flag (cosine and modified-cosine families).".to_string(),
+                                    |flag| weighted_description(flag).to_string(),
+                                )),
+                                on_click: {
+                                    let mut sig = pathway_weighted;
+                                    move |_| {
+                                        let mut set = sig.read().clone();
+                                        if set.contains(&choice) {
+                                            set.remove(&choice);
+                                        } else {
+                                            set.insert(choice);
+                                        }
+                                        sig.set(set);
+                                    }
+                                },
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Heatmap-specific configuration rows. Extracted so the outer
+/// `ConfigurationPanel` can switch between this and `PathwayConfigSection`
+/// based on the active tab.
+#[component]
+#[allow(non_snake_case, clippy::too_many_arguments)]
+fn HeatmapConfigSection(
+    catalog: Option<Rc<ConfigCatalog>>,
+    metric_kind: Signal<MetricKind>,
+    color_scale: Signal<ColorScale>,
+    alpha_milli: Signal<u32>,
+    d_centi: Signal<u32>,
+    active_key: Signal<Option<ConfigKey>>,
+) -> Element {
+    rsx! {
+        // Metric (kind) row
+        div { class: "field-row",
                 span {
                     class: "field-label",
                     title: "Which statistic of the score distribution comparison is mapped to color.",
@@ -706,7 +1476,6 @@ fn ConfigurationPanel(
                 option { value: "200", label: "0.1" }
                 option { value: "300", label: "1" }
             }
-        }
     }
 }
 
@@ -750,6 +1519,7 @@ fn ConfigSelector(catalog: Rc<ConfigCatalog>, active_key: Signal<Option<ConfigKe
             div { class: "pill-row",
                 for family in Family::ALL {
                     Pill {
+                        key: "{family.label()}",
                         label: family.label().to_string(),
                         active: current.family == family,
                         disabled: !available_families.contains(&family),
@@ -777,6 +1547,7 @@ fn ConfigSelector(catalog: Rc<ConfigCatalog>, active_key: Signal<Option<ConfigKe
             div { class: "pill-row",
                 for mz in mz_options.iter().copied() {
                     Pill {
+                        key: "{mz.label()}",
                         label: mz.label(),
                         active: current.mz_exp == mz,
                         disabled: false,
@@ -804,6 +1575,7 @@ fn ConfigSelector(catalog: Rc<ConfigCatalog>, active_key: Signal<Option<ConfigKe
             div { class: "pill-row",
                 for int_exp in int_options.iter().copied() {
                     Pill {
+                        key: "{int_exp.label()}",
                         label: int_exp.label(),
                         active: current.int_exp == int_exp,
                         disabled: false,
@@ -938,10 +1710,11 @@ fn HeatmapPanel(
     alpha_milli: Signal<u32>,
     d_centi: Signal<u32>,
     active_key: Signal<Option<ConfigKey>>,
-    dataset_resource: Resource<Result<(Vec<ConfigEntry>, DistributionGrid), String>>,
+    dataset_resource: DatasetResource,
 ) -> Element {
+    let current_idx = dataset_index();
     let dataset_label = datasets
-        .get(dataset_index())
+        .get(current_idx)
         .map(|d| d.label.clone())
         .unwrap_or_default();
     let state = dataset_resource.read_unchecked();
@@ -954,7 +1727,10 @@ fn HeatmapPanel(
                 h2 { class: "panel-title", "Heatmap" }
             }
             match &*state {
-                Some(Ok((configs, grid))) => rsx! {
+                // Hold the previous dataset's heatmap back while the new
+                // fetch is still in flight so the figure never appears
+                // under a mismatched dataset label.
+                Some(Ok((fetched_idx, configs, grid))) if *fetched_idx == current_idx => rsx! {
                     HeatmapBody {
                         configs: configs.clone(),
                         grid: Rc::new(GridBundle::from(grid)),
@@ -969,7 +1745,7 @@ fn HeatmapPanel(
                 Some(Err(error)) => rsx! {
                     p { class: "error", "Failed to load dataset: {error}" }
                 },
-                None => rsx! { p { class: "loading", "Loading dataset…" } },
+                _ => rsx! { p { class: "loading", "Loading dataset…" } },
             }
         }
     }
@@ -1027,7 +1803,7 @@ fn HeatmapBody(
     let grid_for_render = grid.clone();
     let catalog_for_render = catalog.clone();
     let dataset_label_for_render = dataset_label.clone();
-    let svg = use_memo(move || -> Result<(String, String), String> {
+    let svg = use_memo(move || -> Result<(String, String, String), String> {
         let key = active_key
             .read()
             .ok_or_else(|| "no config selected".to_string())?;
@@ -1069,20 +1845,41 @@ fn HeatmapBody(
             alpha,
             d_threshold,
         );
-        Ok((caption, responsive_svg::make_responsive(svg_string)))
+        let responsive = responsive_svg::make_responsive(svg_string);
+        let data_uri = svg_export::to_data_uri(&responsive);
+        let metric_slug = format!("{}_{}", metric_kind_value.slug(), scale_value.slug());
+        let filename_stem = svg_export::sanitize_filename(&format!(
+            "heatmap_{dataset}_{slug}_{metric_slug}",
+            dataset = dataset_label_for_render.as_str()
+        ));
+        Ok((caption, data_uri, filename_stem))
     });
 
     rsx! {
         match &*svg.read_unchecked() {
-            Ok((caption, markup)) => {
+            Ok((caption, data_uri, filename_stem)) => {
                 let caption_html = caption_to_html(caption);
                 rsx! {
                     figure { class: "heatmap-figure",
-                        div {
-                            class: "heatmap-frame",
-                            role: "img",
-                            aria_label: "{caption}",
-                            dangerous_inner_html: "{markup}",
+                        div { class: "heatmap-frame",
+                            img {
+                                class: "heatmap-image",
+                                src: "{data_uri}",
+                                alt: "{caption}",
+                            }
+                        }
+                        div { class: "figure-actions",
+                            a {
+                                class: "pill download-pill",
+                                href: "{data_uri}",
+                                download: "{filename_stem}.svg",
+                                title: "Download this figure as SVG. Right-click the image itself for \"Copy image\" or \"Save image as ...\".",
+                                aria_label: "Download this figure as SVG",
+                                span { aria_hidden: "true",
+                                    Icon { width: 14, height: 14, icon: FaDownload, class: "panel-icon" }
+                                }
+                                "SVG"
+                            }
                         }
                         figcaption { class: "figure-caption",
                             span { aria_hidden: "true",
@@ -1105,10 +1902,62 @@ fn HeatmapBody(
     }
 }
 
-#[allow(dead_code, clippy::missing_const_for_fn)]
-fn _silence_database_icon_unused() {
-    // The `FaDatabase` import is kept for future dataset rows but isn't on
-    // a render path yet; this no-op makes clippy's `unused_imports` happy
-    // without burning a `#[allow]` on the top-level import.
-    let _ = FaDatabase;
+#[cfg(test)]
+mod caption_tests {
+    use super::caption_to_html;
+
+    #[test]
+    fn coloring_respects_word_boundaries() {
+        let caption =
+            "Caption title here. It is the share of queries whose predicted-pathway matches.";
+        let html = caption_to_html(caption);
+        // The literal color word "red" sits inside "predicted-pathway" and
+        // must not be wrapped in a coloured span.
+        assert!(
+            !html.contains("p<strong style=\"color: #9d4133;\">red</strong>icted"),
+            "should not colour the `red` substring inside `predicted`: {html}"
+        );
+    }
+
+    #[test]
+    fn coloring_still_applies_to_standalone_color_words() {
+        let caption = "Title here. The dashed coral curve traces α and the cyan curve traces D.";
+        let html = caption_to_html(caption);
+        assert!(
+            html.contains("<strong style=\"color: #c84766;\">coral</strong>"),
+            "expected coral to be coloured: {html}"
+        );
+        assert!(
+            html.contains("<strong style=\"color: #2b85ac;\">cyan</strong>"),
+            "expected cyan to be coloured: {html}"
+        );
+    }
+
+    #[test]
+    fn title_bold_extends_past_decimal_periods() {
+        // The previous heuristic stopped the title at the first '.' it
+        // saw, which broke on captions whose first sentence mentions a
+        // decimal exponent (e.g. m/z^3 · intensity^0.6). The fix only
+        // treats a '.' as a sentence boundary when followed by whitespace
+        // or end-of-string.
+        let caption = "Heatmap under the cosine similarity with per-peak weighting w ∝ m/z^3 · intensity^0.6. Each cell reports the metric value.";
+        let html = caption_to_html(caption);
+        assert!(
+            html.contains("intensity^0.6.</strong>"),
+            "the bold title should include the whole exponent through `intensity^0.6.`: {html}"
+        );
+        assert!(
+            !html.contains("intensity^0.</strong>"),
+            "the bold title must not stop at the decimal `.`: {html}"
+        );
+    }
+
+    #[test]
+    fn title_bold_falls_back_to_full_caption_when_no_period() {
+        let html = caption_to_html("Caption without a period");
+        assert!(
+            html.contains("<strong>Caption without a period</strong>"),
+            "expected the whole caption to be bold when it has no sentence terminator: {html}"
+        );
+    }
 }
