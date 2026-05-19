@@ -623,7 +623,7 @@ fn Hero() -> Element {
                     rel: "noopener noreferrer",
                     "MCC tracks performance more honestly than accuracy or AUROC under class imbalance"
                 }
-                ". With a single deterministic representative draw none of these numbers carry confidence intervals. Future work in the README covers exponent ranges beyond the current grid, repeated sampling of random class representatives, and a mechanistic write-up of why certain similarity-and-peak-count combinations align with certain pathways. The Pathways tab below lets the reader pick a pathway and metric and toggle similarity-family, m/z, intensity, and entropy-weighting filters."
+                ". With a single deterministic representative draw none of these numbers carry confidence intervals. Future work in the README covers exponent ranges beyond the current grid, repeated sampling of random class representatives, and a mechanistic write-up of why certain similarity-and-peak-count combinations seem to align with certain pathways. The Pathways tab below lets the reader pick a pathway and metric and toggle similarity-family, m/z, intensity, and entropy-weighting filters."
             }
         }
     }
