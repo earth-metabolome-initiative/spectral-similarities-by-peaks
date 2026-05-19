@@ -129,8 +129,6 @@ Intensity exponent 1.0 is the worst single choice. The four cosine and modified-
 
 Six modified-variant configurations (five modified-cosine entries and one modified-entropy with weighted=false) reach their best AUROC of 0.5240 at top-1 and stay below that value at every larger peak count. All six share the same 0.5240 AUROC and 0.1447 AUPRC at top-1, which is the trivial single-peak case. Above top-1 these configurations carry no peak-count-dependent signal.
 
-Per-config curves of the aggregate AUROC and AUPRC by retained peak count are written to `pathway_discriminability_plots/auroc.{svg,png}` and `pathway_discriminability_plots/auprc.{svg,png}` (one line per config, colour by metric family, dash pattern by m/z exponent). The same numbers power the interactive Pathways tab of the web viewer.
-
 ## Web viewer
 
 The repo also ships a small Dioxus + WebAssembly viewer with two tabs. The Heatmaps tab renders the 8 metric heatmaps per config on demand in the browser, fetching a dataset's `distribution_grid.npz` (~9 MB) and re-using the same `plotters` pipeline as the CLI compiled to WASM. The Pathways tab renders AUROC / AUPRC / accuracy / MCC line plots from `pathway_discriminability_lines.json`, with filters for similarity family, m/z exponent, intensity exponent, and entropy weighting.
