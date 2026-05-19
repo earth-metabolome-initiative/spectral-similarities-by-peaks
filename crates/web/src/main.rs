@@ -503,7 +503,7 @@ fn Hero() -> Element {
                     rel: "noopener noreferrer",
                     "harmonized annotated dataset"
                 }
-                " and a sampled subset of the "
+                " and a sample of the "
                 a {
                     href: "https://zenodo.org/records/20040772",
                     target: "_blank",
@@ -535,35 +535,35 @@ fn Hero() -> Element {
                     rel: "noopener noreferrer",
                     "Entropy"
                 }
-                ", and Modified entropy at several m/z and intensity exponents are compared cell-by-cell on the 128 by 128 grid by KS D statistic, asymptotic KS p-value, mean difference, and 1-D Wasserstein distance. The whole pipeline is implemented in Rust, with queries accelerated by spectrum indices inspired by "
+                ", and Modified entropy at several m/z and intensity exponents are compared cell-by-cell on the 128 by 128 grid by KS D statistic, asymptotic KS p-value, mean difference, and 1-D Wasserstein distance. The Rust pipeline uses "
                 a {
                     href: "https://doi.org/10.1038/s41592-023-02012-9",
                     target: "_blank",
                     rel: "noopener noreferrer",
                     "Flash entropy search"
                 }
-                ". Even with those, the full scan still consumed ~70k compute hours on the Lawrencium cluster. The distributions stabilise quickly: D ≤ 0.05 is reached at 4 to 47 retained peaks and D ≤ 0.01 at 7 to 103, with the intensity exponent dominating the per-config diversity ranking. Each cell pools 6 to 28 million pairwise scores, so the asymptotic p-values fall inside "
+                "-style indices and still ran ~70k compute hours on Lawrencium. Distributions stabilise quickly: D ≤ 0.05 at 4 to 47 retained peaks, D ≤ 0.01 at 7 to 103, with intensity exponent dominating the per-config diversity ranking. With 6 to 28 million pairs per cell the asymptotic p-values fall inside "
                 a {
                     href: "https://en.wikipedia.org/wiki/Lindley%27s_paradox",
                     target: "_blank",
                     rel: "noopener noreferrer",
                     "Lindley's-paradox"
                 }
-                " territory and the figures rely on the sample-size-invariant D statistic. A second line of inquiry builds a fixed reference panel of up to 35 spectra (the first 5 labeled examples of each of the 7 base "
+                " territory, so the figures rely on the sample-size-invariant D statistic. A second line of inquiry builds a reference panel of up to 35 spectra (5 from each of the 7 base "
                 a {
                     href: "https://doi.org/10.1186/s13321-022-00624-5",
                     target: "_blank",
                     rel: "noopener noreferrer",
                     "NPClassifier"
                 }
-                " pathways), scores every query against the panel as the sum of similarity hits to each pathway's representatives, and reports AUROC, AUPRC, accuracy, and MCC (Matthews correlation coefficient) per pathway. In this deterministic-first-5-per-pathway setup the similarity-sum carries no usable predictive signal: per-pathway one-vs-rest MCC stays within [-0.17, 0.13] and the support-weighted aggregate caps at 0.024, a clean illustration of why "
+                " pathways), scores every query against it as a per-pathway similarity-sum, and reports AUROC, AUPRC, accuracy, and MCC. The similarity-sum carries no usable predictive signal: per-pathway one-vs-rest MCC stays within [-0.17, 0.13] and the support-weighted aggregate caps at 0.024, a clean illustration of why "
                 a {
                     href: "https://doi.org/10.1186/s13040-023-00322-4",
                     target: "_blank",
                     rel: "noopener noreferrer",
                     "MCC tracks performance more honestly than accuracy or AUROC under class imbalance"
                 }
-                ". And because the reference panel is a single deterministic draw, none of these numbers carry confidence intervals, so we cannot make statistical claims about whether one config beats another or whether the per-pathway winners are reproducible from one run. Open avenues we hope to address with collaborators (collected under Future work in the README) include m/z exponents below 1 and below 0, intensity exponents above 1.0 or below 0 to probe the low-intensity peak regime where diagnostic neutral losses live, repeated sampling of random class representatives so the pathway-classification numbers carry confidence intervals rather than a single deterministic estimate, and a mechanistic write-up of why certain similarity-and-peak-count combinations dominate on certain pathways, sorting biological chemotype patterns from instrument-dependent fragmentation behaviour. The Pathways tab below lets the reader pick a pathway and metric and toggle similarity-family, m/z, intensity, and entropy-weighting filters."
+                ". With a single deterministic representative draw none of these numbers carry confidence intervals. Future work in the README covers exponent ranges beyond the current grid, repeated sampling of random class representatives, and a mechanistic write-up of why certain similarity-and-peak-count combinations align with certain pathways. The Pathways tab below lets the reader pick a pathway and metric and toggle similarity-family, m/z, intensity, and entropy-weighting filters."
             }
         }
     }
