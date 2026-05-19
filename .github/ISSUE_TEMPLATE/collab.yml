@@ -6,11 +6,7 @@ labels:
 body:
   - type: markdown
     attributes:
-      value: |
-        Thanks for your interest. Fill in the form so we can scope what you want
-        to explore and what compute we can run together. None of these fields
-        is strictly required except the few marked with an asterisk in the
-        right-hand column.
+      value: "Thanks for your interest. Fill in the form so we can scope what you want to explore and what compute we can run together. None of these fields is strictly required except the few marked with an asterisk in the right-hand column."
 
   - type: input
     id: name
@@ -52,13 +48,8 @@ body:
     id: compute
     attributes:
       label: Compute you can access
-      description: |
-        Cluster, cloud, or workstation. Rough number of CPU cores, RAM,
-        GPU model and VRAM, and the total CPU- or GPU-hours you could
-        allocate to the project.
-      placeholder: |
-        e.g. 200-core SLURM partition on our local HPC, ~10 000 CPU-hours,
-        no GPU; plus a 1 TB-RAM workstation for ad-hoc runs.
+      description: "Cluster, cloud, or workstation. Rough number of CPU cores, RAM, GPU model and VRAM, and the total CPU- or GPU-hours you could allocate to the project."
+      placeholder: "e.g. 200-core SLURM partition on our local HPC, ~10 000 CPU-hours, no GPU, plus a 1 TB-RAM workstation for ad-hoc runs."
     validations:
       required: true
 
@@ -91,12 +82,8 @@ body:
     id: parameters
     attributes:
       label: Parametrizations of interest
-      description: |
-        m/z exponent, intensity exponent, entropy weighting, retained
-        peak-count range, anything else.
-      placeholder: |
-        e.g. cosine with m/z exp 1.0 and intensity exp 0.25 across the full
-        1..=128 peak grid; modified-entropy with the weighting flag toggled.
+      description: "m/z exponent, intensity exponent, entropy weighting, retained peak-count range, anything else."
+      placeholder: "e.g. cosine with m/z exp 1.0 and intensity exp 0.25 across the full 1..=128 peak grid, or modified-entropy with the weighting flag toggled."
     validations:
       required: false
 
@@ -119,9 +106,7 @@ body:
     id: motivation
     attributes:
       label: Motivation and scientific question
-      description: |
-        What are you trying to answer? What does success look like? Which
-        downstream task or paper does this feed into?
+      description: "What are you trying to answer? What does success look like? Which downstream task or paper does this feed into?"
     validations:
       required: true
 
@@ -129,8 +114,6 @@ body:
     id: notes
     attributes:
       label: Anything else
-      description: |
-        Constraints, deadlines, preferred communication channel, related
-        code, papers, or in-house tools we should know about.
+      description: "Constraints, deadlines, preferred communication channel, related code, papers, or in-house tools we should know about."
     validations:
       required: false
