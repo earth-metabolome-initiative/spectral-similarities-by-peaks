@@ -318,9 +318,8 @@ fn config_caption_phrase(key: ConfigKey) -> String {
 /// crate (no user-supplied text).
 #[must_use]
 pub fn caption_to_html(caption: &str) -> String {
-    let (title, rest) = caption
-        .find('.')
-        .map_or((caption, ""), |idx| caption.split_at(idx + 1));
+    let (title, rest) =
+        first_sentence_end(caption).map_or((caption, ""), |split_at| caption.split_at(split_at));
 
     // Order matters: longer / compound tokens must be replaced before the
     // shorter ones they contain (e.g. "near-white" before "white"). The
@@ -377,6 +376,29 @@ fn replace_word_boundary(haystack: &str, needle: &str, replacement: &str) -> Str
     }
     out.push_str(&haystack[last_end..]);
     out
+}
+
+/// Find the byte offset immediately after the first sentence-ending
+/// period in `text`, or `None` if there is no such period. A period
+/// counts as sentence-ending only when it is followed by whitespace or
+/// end-of-string, so decimals like `intensity^0.6` are not treated as a
+/// sentence boundary and the caption's title segment stays bold all
+/// the way to the real first `. `.
+fn first_sentence_end(text: &str) -> Option<usize> {
+    let mut search_start = 0;
+    while let Some(rel) = text[search_start..].find('.') {
+        let idx = search_start + rel;
+        let after_dot = idx + '.'.len_utf8();
+        let bounded = text[after_dot..]
+            .chars()
+            .next()
+            .is_none_or(char::is_whitespace);
+        if bounded {
+            return Some(after_dot);
+        }
+        search_start = after_dot;
+    }
+    None
 }
 
 /// Format an α / D threshold value compactly for inline mention.
@@ -1916,6 +1938,34 @@ mod caption_tests {
         assert!(
             html.contains("<strong style=\"color: #2b85ac;\">cyan</strong>"),
             "expected cyan to be coloured: {html}"
+        );
+    }
+
+    #[test]
+    fn title_bold_extends_past_decimal_periods() {
+        // The previous heuristic stopped the title at the first '.' it
+        // saw, which broke on captions whose first sentence mentions a
+        // decimal exponent (e.g. m/z^3 · intensity^0.6). The fix only
+        // treats a '.' as a sentence boundary when followed by whitespace
+        // or end-of-string.
+        let caption = "Heatmap under the cosine similarity with per-peak weighting w ∝ m/z^3 · intensity^0.6. Each cell reports the metric value.";
+        let html = caption_to_html(caption);
+        assert!(
+            html.contains("intensity^0.6.</strong>"),
+            "the bold title should include the whole exponent through `intensity^0.6.`: {html}"
+        );
+        assert!(
+            !html.contains("intensity^0.</strong>"),
+            "the bold title must not stop at the decimal `.`: {html}"
+        );
+    }
+
+    #[test]
+    fn title_bold_falls_back_to_full_caption_when_no_period() {
+        let html = caption_to_html("Caption without a period");
+        assert!(
+            html.contains("<strong>Caption without a period</strong>"),
+            "expected the whole caption to be bold when it has no sentence terminator: {html}"
         );
     }
 }
